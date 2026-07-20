@@ -1,0 +1,25 @@
+{
+  "name": "superhive-pi-orchestration",
+  "version": "0.1.0",
+  "description": "Coordinator-only orchestration extension for project lead Pi agents",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "smoke": "node --import tsx test/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.6.0"
+  }
+}
