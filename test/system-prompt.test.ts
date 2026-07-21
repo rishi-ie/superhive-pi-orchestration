@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSystemPrompt } from "../system-prompt.ts";
+import { buildRolePromptFragment, buildSystemPrompt } from "../system-prompt.ts";
 import type { ProjectBlock } from "../types.ts";
 
 const baseProject: ProjectBlock = {
@@ -104,16 +104,25 @@ test("buildSystemPrompt: member row includes model and status", () => {
 	assert.match(prompt, /`error`/);
 });
 
-test("buildSystemPrompt: tools section mentions Gap 2 stubs honestly", () => {
+test("buildSystemPrompt: tools section lists all 5 wired tools, no Gap 2 stubs", () => {
 	const prompt = buildSystemPrompt(baseProject, {});
 	assert.match(prompt, /## Your Tools/);
 	assert.match(prompt, /list_project_agents/);
 	assert.match(prompt, /get_agent_status/);
-	assert.match(prompt, /dispatch_to_agent/);
+	assert.match(prompt, /ask_member/);
 	assert.match(prompt, /read_inbox/);
-	assert.match(prompt, /send_message_to_agent/);
-	assert.match(prompt, /GAP 2/);
-	assert.match(prompt, /mailbox not yet wired/);
+	assert.match(prompt, /post_to_project/);
+	assert.doesNotMatch(prompt, /dispatch_to_agent/);
+	assert.doesNotMatch(prompt, /send_message_to_agent/);
+	assert.doesNotMatch(prompt, /GAP 2/);
+	assert.doesNotMatch(prompt, /mailbox not yet wired/);
+});
+
+test("buildSystemPrompt: includes Mailbox section with [mail] instructions", () => {
+	const prompt = buildSystemPrompt(baseProject, {});
+	assert.match(prompt, /## Mailbox/);
+	assert.match(prompt, /\[mail\]/);
+	assert.match(prompt, /read_inbox/);
 });
 
 test("buildSystemPrompt: includes decision style, escalation, boundaries", () => {
@@ -123,4 +132,21 @@ test("buildSystemPrompt: includes decision style, escalation, boundaries", () =>
 	assert.match(prompt, /## Boundaries/);
 	assert.match(prompt, /project memory is permanent/);
 	assert.match(prompt, /Do not silently retry/);
+});
+
+test("buildRolePromptFragment: coordinator fragment mentions [mail] and read_inbox", () => {
+	const fragment = buildRolePromptFragment("coordinator");
+	assert.match(fragment, /project agent/i);
+	assert.match(fragment, /\[mail\]/);
+	assert.match(fragment, /read_inbox/);
+	assert.match(fragment, /post_to_project|ask_member/);
+});
+
+test("buildRolePromptFragment: member fragment mentions [mail] and read_inbox", () => {
+	const fragment = buildRolePromptFragment("member");
+	assert.match(fragment, /project member/i);
+	assert.match(fragment, /\[mail\]/);
+	assert.match(fragment, /read_inbox/);
+	assert.match(fragment, /post_to_project/);
+	assert.doesNotMatch(fragment, /ask_member/);
 });

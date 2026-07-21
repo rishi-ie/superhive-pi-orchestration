@@ -1,26 +1,60 @@
 /**
  * Cross-module rules for superhive-pi-orchestration.
  *
- * I am a Pi extension that runs only inside project-coordinator agents.
- * My world is the agent's settings file and the filesystem; I never call
- * back to Electron.
+ * I am a Pi extension that runs inside project-context agents. My world is
+ * the agent's settings file and the filesystem; I never call back to
+ * Electron.
  *
- * 1. AGENT_KIND gating. I no-op for any agent whose `process.env.AGENT_KIND`
- *    is not strictly `'project-coordinator'`. Standard agents must never
- *    see my tools.
+ * The gate is now role-based: any project member loads the extension; the
+ * tool set depends on the role. Members get a smaller tool set; the pure
+ * filesystem rule still holds.
+ *
+ * 1. Project-member gate. I no-op for any agent whose settings file has
+ *    no `project` block. The block carries `localPath` and
+ *    `coordinatorAgentId`. The role is:
+ *      - coordinator: AGENT_ID === project.coordinatorAgentId
+ *      - member:      AGENT_ID !== project.coordinatorAgentId
+ *    Standard agents (no project block) must never see my tools.
  * 2. Pure filesystem backing. My tools read the truth settings file
- *    `<agentRoot>/Superhive-pi-<foldername>.json` directly. I never open a
- *    socket, never spawn a subprocess, never call into Electron.
- * 3. Honest stubs. The 3 dispatch/inbox/send tools return `{ok:false,
- *    error:"mailbox not yet wired (Gap 2)"}` until Gap 2 lands. I never
- *    pretend to do work I can't do.
- * 4. Atomic writes. When I write back to the settings file, I use the
+ *    `<agentRoot>/Superhive-pi-<foldername>.json` directly. I never open
+ *    a socket, never spawn a subprocess, never call into Electron. The
+ *    mailbox files I read/write are:
+ *      - <projectDir>/agent/chat.jsonl — the project chat (read/write)
+ *      - <memberDir>/inbox.jsonl       — per-member direct-ask inbox
+ *                                        (write by coord, read by member)
+ *    The on-disk format is identical to `electron/mailbox-store.ts` so
+ *    the main-process watcher treats my writes and IPC writes
+ *    indistinguishably.
+ * 3. Tool set per role.
+ *      - coordinator: list_project_agents, get_agent_status, ask_member,
+ *                     read_inbox, post_to_project (5 tools)
+ *      - member:      read_inbox, post_to_project (2 tools)
+ *    Members never get `ask_member` — workers don't direct-message other
+ *    workers; they post to the project and let the coordinator route.
+ * 4. `read_inbox` is role-aware.
+ *      - coordinator: reads <projectDir>/agent/chat.jsonl, filters by
+ *                     kind, excludes self + user, excludes entries
+ *                     already delivered to self. Marks returned entries
+ *                     as delivered (idempotent).
+ *      - member:      reads <memberDir>/inbox.jsonl, status=pending.
+ *                     Acks returned entries (idempotent).
+ * 5. Atomic writes. When I write back to the settings file, I use the
  *    same tmp+rename+counter-bump pattern as superhive-pi-truth so the
- *    watcher treats my writes correctly.
- * 5. No new cross-module contracts. I read the `project` block that
- *    `superhive-pi-truth/settings-schema.ts` declares. I do not add my own
- *    schema fields without coordinating with the truth module.
- * 6. The bundled copy at `general-kai/extensions/superhive-pi-orchestration`
+ *    watcher treats my writes correctly. Mailbox appends use plain
+ *    `appendFileSync` (atomic for writes < PIPE_BUF = 4096 bytes);
+ *    mailbox status flips (`markChatDelivered`, `ackInboxMessage`) use
+ *    tmp+rename.
+ * 6. No new cross-module contracts. I read the `project` block that
+ *    `superhive-pi-truth/settings-schema.ts` declares. I do not add my
+ *    own schema fields without coordinating with the truth module.
+ * 7. System-prompt injection.
+ *      - coordinator: buildSystemPrompt writes the full CEO prompt to
+ *                     settings.systemPrompt.
+ *      - member:      buildRolePromptFragment('member') is appended to
+ *                     the existing systemPrompt, marker-guarded so the
+ *                     append is idempotent across session_starts. We
+ *                     never overwrite the user's prompt.
+ * 8. The bundled copy at `general-kai/extensions/superhive-pi-orchestration`
  *    is synced from this repo. `diff -rq` must be empty before commit.
  */
 

@@ -1,19 +1,41 @@
 /**
- * Coordinator-only orchestration tools.
+ * Orchestration tools, registered for both project coordinators and
+ * project members. The set of tools depends on the role:
+ *   - coordinator: all 5 tools
+ *       (list_project_agents, get_agent_status, ask_member, read_inbox,
+ *        post_to_project)
+ *   - member: 2 tools
+ *       (read_inbox, post_to_project)
  *
- * 5 tools, gated to `project-coordinator` agents via conditional registration
- * in `index.ts`. 2 read live state from the truth settings file. 3 return
- * honest Gap 2 stubs so the LLM sees the real failure mode instead of
- * silently no-op'ing.
+ * Gap 2: the 3 mailbox tools (ask_member, read_inbox, post_to_project) are
+ * wired to the pure-FS helpers in project.ts. The on-disk format matches
+ * `electron/mailbox-store.ts` so the main-process watcher treats
+ * orchestrator writes and main-process IPC writes indistinguishably.
+ *
+ * Role-aware behavior:
+ *   - read_inbox (coordinator): reads <projectDir>/agent/chat.jsonl,
+ *       filters by kind, excludes self+user, excludes already-delivered.
+ *   - read_inbox (member):      reads <memberDir>/inbox.jsonl, status=pending.
+ *   - post_to_project:          same on both — appends to project chat.
+ *   - ask_member:               coordinator-only; members don't have it.
  */
 
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readProjectBlock } from "./project.ts";
-import type { ProjectBlock } from "./types.ts";
-
-const GAP2_ERROR =
-	"mailbox not yet wired (Gap 2). This tool will be implemented when Gap 2 lands — see superhive/GAPS.md.";
+import {
+	ackInboxMessage,
+	appendMemberInbox,
+	appendProjectChat,
+	findMemberById,
+	markChatDelivered,
+	readMemberInbox,
+	readProjectChat,
+	readProjectBlock,
+	readSettings,
+} from "./project.ts";
+import type { ChatEntry, InboxEntry, MailKind, MemberRef, ProjectBlock } from "./types.ts";
 
 function jsonResult(data: unknown) {
 	return {
@@ -22,12 +44,23 @@ function jsonResult(data: unknown) {
 	};
 }
 
-export function registerOrchestrationTools(pi: ExtensionAPI, settingsPath: string): void {
-	pi.registerTool(listProjectAgents(settingsPath));
-	pi.registerTool(getAgentStatus(settingsPath));
-	pi.registerTool(dispatchToAgent());
-	pi.registerTool(readInbox());
-	pi.registerTool(sendMessageToAgent());
+export interface RegisterOpts {
+	role: "coordinator" | "member";
+	settingsPath: string;
+	project: ProjectBlock;
+}
+
+export function registerOrchestrationTools(pi: ExtensionAPI, opts: RegisterOpts): void {
+	if (opts.role === "coordinator") {
+		pi.registerTool(listProjectAgents(opts.settingsPath));
+		pi.registerTool(getAgentStatus(opts.settingsPath));
+		pi.registerTool(askMember(opts));
+		pi.registerTool(readInbox(opts));
+		pi.registerTool(postToProject(opts));
+	} else {
+		pi.registerTool(readInbox(opts));
+		pi.registerTool(postToProject(opts));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -92,44 +125,66 @@ function getAgentStatus(settingsPath: string) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. dispatch_to_agent — Gap 2 stub
+// 3. ask_member — coordinator-only, writes to member's inbox.jsonl
 // ---------------------------------------------------------------------------
 
-const DispatchParams = Type.Object({
+const AskMemberParams = Type.Object({
 	agentId: Type.String({ description: "Target specialist's agentId" }),
-	task: Type.String({ description: "The task description to send" }),
-	priority: Type.Optional(
-		Type.Union([Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")], {
-			description: "Task priority (default 'normal')",
+	body: Type.String({ description: "Question or task for the specialist" }),
+	kind: Type.Optional(
+		Type.Union([Type.Literal("request"), Type.Literal("question"), Type.Literal("result")], {
+			description: "Message kind (default 'request')",
 		}),
 	),
 });
 
-function dispatchToAgent() {
+function askMember(opts: RegisterOpts) {
 	return defineTool({
-		name: "dispatch_to_agent",
-		label: "Dispatch To Agent",
+		name: "ask_member",
+		label: "Ask Member",
 		description:
-			"[GAP 2 STUB] Assign a task to a specialist. Returns an error in Gap 1 because the mailbox substrate is not yet wired. Replace this stub when Gap 2 lands.",
-		parameters: DispatchParams,
+			"Send a direct ask to a specific member agent. The member's runtime wakes and reads its inbox. Use this to delegate a question to a specialist who can answer it.",
+		parameters: AskMemberParams,
 
 		async execute(_id, params) {
-			return jsonResult({
-				ok: false,
-				error: GAP2_ERROR,
-				hint: "wanted to dispatch",
-				received: {
-					agentId: params.agentId,
-					taskLength: params.task.length,
-					priority: params.priority ?? "normal",
-				},
-			});
+			if (opts.role !== "coordinator") {
+				return jsonResult({
+					ok: false,
+					error: "ask_member is coordinator-only; workers post to the project chat instead",
+				});
+			}
+			const member: MemberRef | undefined = findMemberById(opts.project, params.agentId);
+			if (!member) {
+				return jsonResult({
+					ok: false,
+					error: `agentId ${params.agentId} is not a member of project ${opts.project.id}`,
+				});
+			}
+			if (!member.localPath) {
+				return jsonResult({
+					ok: false,
+					error: `member ${params.agentId} has no localPath; cannot write inbox`,
+				});
+			}
+			const selfAgentId = process.env.AGENT_ID ?? "";
+			const entry: InboxEntry = {
+				id: randomUUID(),
+				ts: Date.now(),
+				fromAgentId: selfAgentId,
+				toAgentId: params.agentId,
+				kind: (params.kind as InboxEntry["kind"]) ?? "request",
+				body: params.body,
+				refMessageId: undefined,
+				status: "pending",
+			};
+			appendMemberInbox(member.localPath, entry);
+			return jsonResult({ ok: true, messageId: entry.id, toAgentId: params.agentId });
 		},
 	});
 }
 
 // ---------------------------------------------------------------------------
-// 4. read_inbox — Gap 2 stub
+// 4. read_inbox — role-aware: coord reads chat, member reads own inbox
 // ---------------------------------------------------------------------------
 
 const ReadInboxParams = Type.Object({
@@ -139,66 +194,102 @@ const ReadInboxParams = Type.Object({
 	),
 });
 
-function readInbox() {
+function readInbox(opts: RegisterOpts) {
 	return defineTool({
 		name: "read_inbox",
 		label: "Read Inbox",
 		description:
-			"[GAP 2 STUB] Read messages addressed to this coordinator. Returns an error in Gap 1 because the mailbox substrate is not yet wired.",
+			opts.role === "coordinator"
+				? "Read pending messages in the project chat. Returns worker posts addressed to you, excluding your own messages and ones you've already read. Use this to see what your team needs."
+				: "Read pending direct asks in your inbox. Returns the latest entries from the project agent.",
 		parameters: ReadInboxParams,
 
 		async execute(_id, params) {
-			return jsonResult({
-				ok: false,
-				error: GAP2_ERROR,
-				hint: "wanted to read inbox",
-				received: { limit: params.limit ?? 50, markAsRead: params.markAsRead ?? true },
-			});
+			const limit = params.limit ?? 50;
+			const markAsRead = params.markAsRead ?? true;
+			const selfAgentId = process.env.AGENT_ID ?? "";
+
+			if (opts.role === "coordinator") {
+				if (!opts.project.localPath) {
+					return jsonResult({ ok: false, error: "project has no localPath" });
+				}
+				const entries = readProjectChat(opts.project.localPath, {
+					limit,
+					kinds: ["request", "question", "broadcast", "result"],
+					excludeFromAgentIds: [selfAgentId, null], // null = user
+					excludeDeliveredTo: [selfAgentId],
+				});
+				if (markAsRead) {
+					for (const e of entries) {
+						markChatDelivered(opts.project.localPath, e.id, selfAgentId);
+					}
+				}
+				return jsonResult({ ok: true, count: entries.length, items: entries });
+			}
+
+			// role === 'member'
+			const self = findMemberById(opts.project, selfAgentId);
+			const selfDir = self?.localPath ?? dirname(opts.settingsPath);
+			const items = readMemberInbox(selfDir, { limit, status: ["pending"] });
+			if (markAsRead) {
+				for (const item of items) {
+					ackInboxMessage(selfDir, item.id);
+				}
+			}
+			return jsonResult({ ok: true, count: items.length, items });
 		},
 	});
 }
 
 // ---------------------------------------------------------------------------
-// 5. send_message_to_agent — Gap 2 stub
+// 5. post_to_project — append to project chat
 // ---------------------------------------------------------------------------
 
-const SendMessageParams = Type.Object({
-	agentId: Type.String({ description: "Target specialist's agentId" }),
+const PostToProjectParams = Type.Object({
 	body: Type.String({ description: "Message body" }),
 	kind: Type.Optional(
 		Type.Union(
 			[
+				Type.Literal("request"),
 				Type.Literal("question"),
 				Type.Literal("result"),
-				Type.Literal("request"),
 				Type.Literal("broadcast"),
 			],
 			{ description: "Message kind (default 'request')" },
 		),
 	),
+	refMessageId: Type.Optional(
+		Type.String({ description: "If this is a reply, the messageId being replied to" }),
+	),
 });
 
-function sendMessageToAgent() {
+function postToProject(opts: RegisterOpts) {
 	return defineTool({
-		name: "send_message_to_agent",
-		label: "Send Message To Agent",
+		name: "post_to_project",
+		label: "Post To Project",
 		description:
-			"[GAP 2 STUB] Send a direct message to a specialist. Returns an error in Gap 1 because the mailbox substrate is not yet wired.",
-		parameters: SendMessageParams,
+			"Append a message to the project chat. Visible to the user, the coordinator, and other agents. Use this to ask a question, post a result, or broadcast an update.",
+		parameters: PostToProjectParams,
 
 		async execute(_id, params) {
-			return jsonResult({
-				ok: false,
-				error: GAP2_ERROR,
-				hint: "wanted to send message",
-				received: {
-					agentId: params.agentId,
-					bodyLength: params.body.length,
-					kind: params.kind ?? "request",
-				},
-			});
+			if (!opts.project.localPath) {
+				return jsonResult({ ok: false, error: "project has no localPath" });
+			}
+			const settings = readSettings(opts.settingsPath);
+			const entry: ChatEntry = {
+				id: randomUUID(),
+				ts: Date.now(),
+				role: "assistant",
+				parts: [{ type: "text", text: params.body }],
+				fromAgentId: process.env.AGENT_ID ?? undefined,
+				fromAgentName: settings?.name,
+				kind: (params.kind as MailKind) ?? "request",
+				refMessageId: params.refMessageId,
+			};
+			appendProjectChat(opts.project.localPath, entry);
+			return jsonResult({ ok: true, messageId: entry.id });
 		},
 	});
 }
 
-export type { ProjectBlock };
+export type { ProjectBlock, MailKind };

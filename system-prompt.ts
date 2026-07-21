@@ -1,8 +1,12 @@
 /**
- * Build the coordinator's CEO system prompt from the project block.
+ * Build the project-context system prompt from the project block.
  *
  * Pure function: takes a project + a small agent descriptor, returns a
  * markdown string. No filesystem, no Pi API. Tested in isolation.
+ *
+ * Gap 2: the prompt is built only for the coordinator. Members keep the
+ * standard Pi agent prompt — they get the mailbox tools but no CEO frame.
+ * The role-aware `[mail]` instruction is in `buildRolePromptFragment`.
  */
 
 import type { ProjectBlock } from "./types.ts";
@@ -13,19 +17,36 @@ export interface AgentDescriptor {
 	description?: string;
 }
 
-const STUB_NOTE =
-	"3 of 5 tools (dispatch, read_inbox, send_message_to_agent) return a clear \"mailbox not yet wired (Gap 2)\" error today and will be implemented in Gap 2.";
-
 export function buildSystemPrompt(project: ProjectBlock, agent: AgentDescriptor): string {
 	const sections: string[] = [];
 	sections.push(buildHeader(project, agent));
 	sections.push(buildMission(project));
 	sections.push(buildTeamSection(project));
 	sections.push(buildToolsSection());
+	sections.push(buildMailboxSection());
 	sections.push(buildDecisionStyleSection());
 	sections.push(buildEscalationSection());
 	sections.push(buildBoundariesSection());
 	return sections.filter((s) => s.length > 0).join("\n\n");
+}
+
+/**
+ * A short role-specific instruction injected alongside the standard agent
+ * prompt. Tells the agent what to do when a `[mail]` wake prompt appears.
+ */
+export function buildRolePromptFragment(role: "coordinator" | "member"): string {
+	if (role === "coordinator") {
+		return [
+			"You are the project agent.",
+			"When your session shows `[mail] New message from ...` or `[mail] You have a new direct ask`, call `read_inbox` to inspect.",
+			"Then either `post_to_project` to reply in the shared chat or `ask_member` to private-ask a specific teammate.",
+		].join(" ");
+	}
+	return [
+		"You are a project member.",
+		"When your session shows `[mail] You have a new direct ask`, call `read_inbox` to see the coordinator's question.",
+		"Then `post_to_project` to reply in the shared project chat so the coordinator and user can see it.",
+	].join(" ");
 }
 
 function buildHeader(project: ProjectBlock, agent: AgentDescriptor): string {
@@ -71,13 +92,17 @@ function buildToolsSection(): string {
 
 You have 5 coordinator-only tools that standard agents cannot see:
 
-- \`list_project_agents\` — enumerate your team (working)
-- \`get_agent_status\` — query one agent's current state (working)
-- \`dispatch_to_agent\` — assign a task to a specialist (GAP 2)
-- \`read_inbox\` — read messages addressed to you (GAP 2)
-- \`send_message_to_agent\` — direct-message a specialist (GAP 2)
+- \`list_project_agents\` — enumerate your team
+- \`get_agent_status\` — query one agent's current state
+- \`ask_member\` — private-ask a specific specialist (writes to their inbox)
+- \`read_inbox\` — read pending project-chat messages from your team
+- \`post_to_project\` — append a message to the shared project chat`;
+}
 
-Note: ${STUB_NOTE}`;
+function buildMailboxSection(): string {
+	return `## Mailbox
+
+When a worker posts in the project chat, the main process injects a \`[mail]\` prompt into your session. Call \`read_inbox\` to fetch pending entries, then either reply in chat (visible to the user) or \`ask_member\` (private, wakes that worker).`;
 }
 
 function buildDecisionStyleSection(): string {
