@@ -24,6 +24,7 @@ export function buildSystemPrompt(project: ProjectBlock, agent: AgentDescriptor)
 	sections.push(buildTeamSection(project));
 	sections.push(buildToolsSection());
 	sections.push(buildMailboxSection());
+	sections.push(buildTasksSection());
 	sections.push(buildDecisionStyleSection());
 	sections.push(buildEscalationSection());
 	sections.push(buildBoundariesSection());
@@ -103,6 +104,16 @@ function buildMailboxSection(): string {
 	return `## Mailbox
 
 When a worker posts in the project chat, the main process injects a \`[mail]\` prompt into your session. Call \`read_inbox\` to fetch pending entries, then either reply in chat (visible to the user) or \`ask_member\` (private, wakes that worker).`;
+}
+
+function buildTasksSection(): string {
+	return `## Tasks
+
+Use \`plan_tasks\` to break complex work into a dependency graph. Each task gets dispatched to its assigned worker when its dependencies are done. The main process runs a 5s polling loop that picks ready tasks and calls \`runtime.send\` with a "Task <id>: <title>" prompt. One task per project is dispatched per tick (serial).
+
+After a worker posts a \`result\` to the project chat and you have read it via \`read_inbox\`, call \`complete_task(taskId, summary)\` to mark the task done. The right-panel "Active tasks" accordion updates on the next \`tasks:changed\` event.
+
+Workers are not told about the plan — they only see their own task prompt. They post back to the project chat when done.`;
 }
 
 function buildDecisionStyleSection(): string {

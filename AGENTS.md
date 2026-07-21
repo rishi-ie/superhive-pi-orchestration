@@ -27,10 +27,12 @@
  *    indistinguishably.
  * 3. Tool set per role.
  *      - coordinator: list_project_agents, get_agent_status, ask_member,
- *                     read_inbox, post_to_project (5 tools)
+ *                     read_inbox, post_to_project, plan_tasks,
+ *                     complete_task (7 tools)
  *      - member:      read_inbox, post_to_project (2 tools)
- *    Members never get `ask_member` — workers don't direct-message other
- *    workers; they post to the project and let the coordinator route.
+ *    Members never get `ask_member`, `plan_tasks`, or `complete_task` —
+ *    workers don't direct-message other workers and don't plan work;
+ *    they post to the project and let the coordinator route.
  * 4. `read_inbox` is role-aware.
  *      - coordinator: reads <projectDir>/agent/chat.jsonl, filters by
  *                     kind, excludes self + user, excludes entries
@@ -56,6 +58,11 @@
  *                     never overwrite the user's prompt.
  * 8. The bundled copy at `general-kai/extensions/superhive-pi-orchestration`
  *    is synced from this repo. `diff -rq` must be empty before commit.
+ * 9. Cross-process file drop. `plan_tasks` writes a JSON file at
+ *    `<coordDir>/tasks-plan.json`; `complete_task` appends a JSONL
+ *    line at `<coordDir>/tasks-complete.jsonl`. The main process's
+ *    `tasks-file-watcher` ingests both and truncates the files.
+ *    The orchestrator never reaches into Electron.
  */
 
 export {};

@@ -82,3 +82,38 @@ export interface InboxEntry {
 	deliveredAt?: number;
 	ackedAt?: number;
 }
+
+/**
+ * Gap 3: plan/complete file drop shapes.
+ *
+ * The coordinator's `plan_tasks` tool writes a TaskPlan to
+ * `<coordDir>/tasks-plan.json`. The main process ingests it
+ * into `db.tasks.json`, then truncates the file.
+ *
+ * The coordinator's `complete_task` tool appends a CompleteEntry
+ * to `<coordDir>/tasks-complete.jsonl`. The main process ingests
+ * each entry as a status flip, then truncates the file.
+ *
+ * On-disk format: matches `electron/tasks-file-watcher-core.ts`
+ * (the reader). Both sides must agree.
+ */
+
+/** One task in the plan. `assignedAgent` is the member's NAME (the
+ *  main process resolves it to an id via the project's agentIds). */
+export interface TaskPlanEntry {
+	title: string;
+	description?: string;
+	/** Other task titles this depends on (best-effort resolution). */
+	dependencies?: string[];
+	assignedAgent: string;
+}
+
+export interface TaskPlan {
+	tasks: TaskPlanEntry[];
+}
+
+export interface TaskCompleteEntry {
+	taskId: string;
+	summary?: string;
+	ts: number;
+}

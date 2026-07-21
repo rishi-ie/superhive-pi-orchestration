@@ -23,7 +23,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
-import type { CoordinatorSettingsShape, InboxEntry, MemberRef, MemberStatus, ProjectBlock, MailKind, ChatEntry } from "./types.ts";
+import type { CoordinatorSettingsShape, InboxEntry, MemberRef, MemberStatus, ProjectBlock, MailKind, ChatEntry, TaskPlan, TaskCompleteEntry } from "./types.ts";
 
 const MANAGED_BY_PREFIX = "superhive-pi-truth@1#";
 
@@ -394,4 +394,40 @@ export function ackInboxMessage(memberDir: string, messageId: string): boolean {
 		throw err
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// Gap 3: plan + complete file drop helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a plan to `<coordDir>/tasks-plan.json` (atomic: tmp + rename).
+ * The main-process tailer ingests the plan into `db.tasks.json`, then
+ * truncates the file. ponytail: same tmp+rename pattern as the truth
+ * settings file, no lock file, no backup. PIPE_BUF-safe for plans
+ * with ≤ ~4000 task entries; larger plans fall back to non-atomic
+ * which the OS still serializes per write call.
+ */
+export function writeTaskPlan(coordDir: string, plan: TaskPlan): void {
+  const target = join(coordDir, "tasks-plan.json")
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, JSON.stringify(plan, null, 2), "utf8")
+  try {
+    renameSync(tmp, target)
+  } catch (err) {
+    try { unlinkSync(tmp) } catch { /* ignore */ }
+    throw err
+  }
+}
+
+/**
+ * Append a completion entry to `<coordDir>/tasks-complete.jsonl`.
+ * The main-process tailer ingests each line as a `changeStatus`
+ * call, then truncates the file. JSONL append via appendFileSync
+ * is atomic for writes < PIPE_BUF (4096 bytes) — the typical
+ * summary fits well under that.
+ */
+export function appendTaskComplete(coordDir: string, entry: TaskCompleteEntry): void {
+  const target = join(coordDir, "tasks-complete.jsonl")
+  appendFileSync(target, JSON.stringify(entry) + "\n", "utf8")
 }

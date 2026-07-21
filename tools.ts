@@ -1,9 +1,9 @@
 /**
  * Orchestration tools, registered for both project coordinators and
  * project members. The set of tools depends on the role:
- *   - coordinator: all 5 tools
+ *   - coordinator: all 7 tools
  *       (list_project_agents, get_agent_status, ask_member, read_inbox,
- *        post_to_project)
+ *        post_to_project, plan_tasks, complete_task)
  *   - member: 2 tools
  *       (read_inbox, post_to_project)
  *
@@ -12,12 +12,17 @@
  * `electron/mailbox-store.ts` so the main-process watcher treats
  * orchestrator writes and main-process IPC writes indistinguishably.
  *
+ * Gap 3: plan_tasks + complete_task (coordinator-only) write JSON/JSONL
+ * files to <coordDir>/. The main process's tasks-file-watcher ingests
+ * them into db.tasks.json and truncates the files. The orchestrator
+ * never reaches into Electron (AGENTS.md rule 2) — file drop only.
+ *
  * Role-aware behavior:
  *   - read_inbox (coordinator): reads <projectDir>/agent/chat.jsonl,
  *       filters by kind, excludes self+user, excludes already-delivered.
  *   - read_inbox (member):      reads <memberDir>/inbox.jsonl, status=pending.
  *   - post_to_project:          same on both — appends to project chat.
- *   - ask_member:               coordinator-only; members don't have it.
+ *   - ask_member, plan_tasks, complete_task: coordinator-only.
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,12 +33,14 @@ import {
 	ackInboxMessage,
 	appendMemberInbox,
 	appendProjectChat,
+	appendTaskComplete,
 	findMemberById,
 	markChatDelivered,
 	readMemberInbox,
 	readProjectChat,
 	readProjectBlock,
 	readSettings,
+	writeTaskPlan,
 } from "./project.ts";
 import type { ChatEntry, InboxEntry, MailKind, MemberRef, ProjectBlock } from "./types.ts";
 
@@ -57,6 +64,8 @@ export function registerOrchestrationTools(pi: ExtensionAPI, opts: RegisterOpts)
 		pi.registerTool(askMember(opts));
 		pi.registerTool(readInbox(opts));
 		pi.registerTool(postToProject(opts));
+		pi.registerTool(planTasks(opts));      // Gap 3
+		pi.registerTool(completeTask(opts));   // Gap 3
 	} else {
 		pi.registerTool(readInbox(opts));
 		pi.registerTool(postToProject(opts));
@@ -293,3 +302,92 @@ function postToProject(opts: RegisterOpts) {
 }
 
 export type { ProjectBlock, MailKind };
+
+// ---------------------------------------------------------------------------
+// 6. plan_tasks — coordinator-only. Writes a TaskPlan to <coordDir>/tasks-plan.json.
+//    Main-process tailer ingests into db.tasks.json and truncates the file.
+// ---------------------------------------------------------------------------
+
+const PlanTasksParams = Type.Object({
+  tasks: Type.Array(
+    Type.Object({
+      title: Type.String({ description: "Short, imperative: 'Add login form'" }),
+      description: Type.Optional(Type.String({ description: "Long-form context" })),
+      dependencies: Type.Optional(
+        Type.Array(Type.String({ description: "Title of another task this depends on" })),
+      ),
+      assignedAgent: Type.String({
+        description: "Member's name (must match a roster entry in the project block)",
+      }),
+    }),
+    { minItems: 1 },
+  ),
+})
+
+function planTasks(opts: RegisterOpts) {
+  return defineTool({
+    name: "plan_tasks",
+    label: "Plan Tasks",
+    description:
+      "Break a complex request into a dependency graph of tasks. " +
+      "Each task gets dispatched to its assignedAgent when its dependencies " +
+      "are done. The main process ingests this plan asynchronously and the " +
+      "right-panel 'Active tasks' accordion will show the work. " +
+      "Returns the count of plan entries written — the actual task ids are " +
+      "assigned by the main process and visible in the next read_inbox or " +
+      "post_to_project exchange.",
+    parameters: PlanTasksParams,
+
+    async execute(_id, params) {
+      const coordDir = dirname(opts.settingsPath)
+      const plan = {
+        tasks: params.tasks.map((t) => ({
+          title: t.title,
+          description: t.description,
+          dependencies: t.dependencies,
+          assignedAgent: t.assignedAgent,
+        })),
+      }
+      writeTaskPlan(coordDir, plan)
+      return jsonResult({
+        written: plan.tasks.length,
+        note: "Plan written; main process ingests asynchronously. Task ids are assigned by the main process and will surface in the next read_inbox.",
+      })
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 7. complete_task — coordinator-only. Appends a TaskCompleteEntry to
+//    <coordDir>/tasks-complete.jsonl. Main-process tailer ingests as
+//    changeStatus('completed', { outcome: summary }) and truncates.
+// ---------------------------------------------------------------------------
+
+const CompleteTaskParams = Type.Object({
+  taskId: Type.String({ description: "The task's id (from read_inbox context)" }),
+  summary: Type.Optional(Type.String({ description: "What was delivered" })),
+})
+
+function completeTask(opts: RegisterOpts) {
+  return defineTool({
+    name: "complete_task",
+    label: "Complete Task",
+    description:
+      "Mark a task as completed with a brief outcome summary. Call this " +
+      "after the assigned worker has posted a result to the project chat " +
+      "and you've read it via read_inbox. The main process ingests the " +
+      "completion asynchronously and the task moves to the bottom of the " +
+      "Active tasks accordion (dimmed).",
+    parameters: CompleteTaskParams,
+
+    async execute(_id, params) {
+      const coordDir = dirname(opts.settingsPath)
+      appendTaskComplete(coordDir, {
+        taskId: params.taskId,
+        summary: params.summary,
+        ts: Date.now(),
+      })
+      return jsonResult({ ok: true, taskId: params.taskId, status: "completed" })
+    },
+  })
+}

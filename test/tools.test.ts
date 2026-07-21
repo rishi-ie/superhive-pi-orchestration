@@ -116,7 +116,7 @@ function findToolByRole(name: string, role: "coordinator" | "member", settingsPa
 	return findTool(name, makeRegisterOpts(role, settingsPath));
 }
 
-test("registerOrchestrationTools: registers exactly 5 tools for coordinator", () => {
+test("registerOrchestrationTools: registers exactly 7 tools for coordinator", () => {
 	const handles: string[] = [];
 	const fakePi = {
 		registerTool(tool: { name: string }) {
@@ -125,11 +125,13 @@ test("registerOrchestrationTools: registers exactly 5 tools for coordinator", ()
 	}
 	const opts = makeRegisterOpts("coordinator", "/dev/null")
 	toolsModule.registerOrchestrationTools(fakePi as unknown as never, opts)
-	assert.equal(handles.length, 5)
+	assert.equal(handles.length, 7)
 	assert.deepEqual(handles.sort(), [
 		"ask_member",
+		"complete_task",
 		"get_agent_status",
 		"list_project_agents",
+		"plan_tasks",
 		"post_to_project",
 		"read_inbox",
 	])
