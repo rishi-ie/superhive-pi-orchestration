@@ -28,6 +28,7 @@ import {
 	agentRootFromWorkspace,
 	orchestrationExtensionPathFor,
 	readOrchestrationExtension,
+	readProjectAgentDefaults,
 	readProjectBlock,
 	readSettings,
 	settingsJsonPathFor,
@@ -35,12 +36,19 @@ import {
 	writeOrchestrationExtension,
 	writeSettingsJson,
 } from "./project.ts";
-import { buildRolePromptFragment, buildSystemPrompt } from "./system-prompt.ts";
+import {
+	buildCategoryFragment,
+	buildRolePromptFragment,
+	buildSystemPrompt,
+} from "./system-prompt.ts";
 import { registerOrchestrationTools } from "./tools.ts";
 
 // Marker in the systemPrompt that records which role's fragment is appended.
 // Used to keep the append idempotent across session_starts.
 const ROLE_FRAGMENT_MARKER = "\n[superhive:role-fragment:";
+// Phase B: marker for category fragments. Same idempotency pattern — we
+// look for the marker in the systemPrompt before re-appending.
+const CATEGORY_FRAGMENT_MARKER = "\n[superhive:category-fragment:";
 
 function readSettingsFromFile(p: string): { systemPrompt?: string } | null {
 	if (!existsSync(p)) return null;
@@ -90,10 +98,50 @@ export default function superhivePiOrchestration(pi: ExtensionAPI): void {
 			const agent = {
 				name: manage?.identity?.name,
 				description: manage?.identity?.description,
+				role: manage?.identity?.role,
 			};
-			const prompt = buildSystemPrompt(project, agent);
+			const basePrompt = buildSystemPrompt(project, agent);
+
+			// Phase B: append per-category guidance from the bundled
+			// defaults JSON. Marker-guarded so re-running session_start
+			// (or a category change in manage.json) doesn't double-append.
+			// The roleFragmentAppended field tracks which category fragment
+			// is currently in place; we replace it (not append) on category
+			// change so the prompt stays clean.
+			const category = manage?.identity?.category;
+			const defaults = readProjectAgentDefaults();
+			let prompt = basePrompt;
+			let roleMarker: string = "coordinator";
+
 			const current = readOrchestrationExtension(orchPath) ?? {};
-			writeOrchestrationExtension(orchPath, { ...current, systemPrompt: prompt, roleFragmentAppended: "coordinator" });
+			const currentMarker = current.roleFragmentAppended ?? null;
+			const categoryChanged = currentMarker?.startsWith("category:") &&
+				currentMarker !== `category:${category ?? ""}`;
+
+			if (category) {
+				const fragment = buildCategoryFragment(category, defaults);
+				if (fragment) {
+					const marker = `${CATEGORY_FRAGMENT_MARKER}${category}]`;
+					const existingMarker = `${CATEGORY_FRAGMENT_MARKER}${currentMarker?.startsWith("category:") ? currentMarker.slice("category:".length) : ""}]`;
+					const alreadyHasMarker = prompt.includes(marker) ||
+						(existingMarker !== marker && prompt.includes(existingMarker));
+
+					if (!alreadyHasMarker || categoryChanged) {
+						// Strip any prior category fragment (different category
+						// or stale marker) before appending the new one.
+						const stripped = stripCategoryFragment(prompt);
+						prompt = `${stripped}${fragment}${marker}`;
+					}
+					roleMarker = `category:${category}`;
+				}
+			} else if (currentMarker?.startsWith("category:")) {
+				// Category was removed from manage.json. Strip the stale
+				// fragment so the prompt returns to the bare CEO frame.
+				prompt = stripCategoryFragment(prompt);
+				roleMarker = "coordinator";
+			}
+
+			writeOrchestrationExtension(orchPath, { ...current, systemPrompt: prompt, roleFragmentAppended: roleMarker });
 
 			// Backward-compat: also seed settings.json's systemPrompt from
 			// the orch write when settings.json has none yet (one-time
@@ -123,4 +171,26 @@ export default function superhivePiOrchestration(pi: ExtensionAPI): void {
 
 		registerOrchestrationTools(pi, { role, settingsPath: managePath, project });
 	});
+}
+
+/**
+ * Strip the most-recently-appended category fragment from a systemPrompt.
+ * Used when the category changes (or is removed) so the prompt reflects
+ * only the current category. We slice from the `## Category Guidance`
+ * heading to the marker line — both are well-defined substrings written
+ * by buildCategoryFragment.
+ *
+ * Returns the input unchanged when no category fragment is present.
+ */
+function stripCategoryFragment(prompt: string): string {
+	const headingIdx = prompt.indexOf("## Category Guidance (");
+	if (headingIdx === -1) return prompt;
+	const markerIdx = prompt.indexOf(CATEGORY_FRAGMENT_MARKER, headingIdx);
+	if (markerIdx === -1) return prompt;
+	const markerEnd = prompt.indexOf("]", markerIdx);
+	if (markerEnd === -1) return prompt;
+	const endOfLine = prompt.indexOf("\n", markerEnd);
+	const sliceEnd = endOfLine === -1 ? prompt.length : endOfLine;
+	const before = prompt.slice(0, headingIdx).replace(/\s+$/, "");
+	return before + prompt.slice(sliceEnd).replace(/^\n+/, "");
 }

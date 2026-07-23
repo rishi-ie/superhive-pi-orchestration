@@ -49,6 +49,13 @@ export interface ManageFileShape {
 		name?: string;
 		description?: string;
 		workspace?: string;
+		/**
+		 * Phase B: project-agent category. Optional — older manage.json
+		 * files (pre-Phase-A) won't have it. The orchestrator reads this
+		 * to know which overlay fragment to append to the CEO prompt.
+		 */
+		role?: string;
+		category?: string;
 	};
 	project?: ProjectBlock;
 	managedBy?: string;
@@ -69,7 +76,14 @@ export interface CoordinatorSettingsShape {
 	systemPrompt?: string;
 	managedBy?: string;
 	lastModified?: string;
-	roleFragmentAppended?: "coordinator" | "member" | null;
+	/**
+	 * Marker indicating which role/category fragment was last appended to
+	 * the systemPrompt. See superhive-pi-truth/settings-schema.ts
+	 * OrchExtensionFile.roleFragmentAppended for the full key convention.
+	 * Widened from "coordinator" | "member" | null in Phase B to support
+	 * category fragments (e.g. "category:research").
+	 */
+	roleFragmentAppended?: string | null;
 }
 
 /** Mail message kind — used by tools and shared with the IPC layer. */

@@ -7,6 +7,11 @@
  * Gap 2: the prompt is built only for the coordinator. Members keep the
  * standard Pi agent prompt — they get the mailbox tools but no CEO frame.
  * The role-aware `[mail]` instruction is in `buildRolePromptFragment`.
+ *
+ * Phase B: per-category `systemPromptAddition` fragments are appended
+ * via `buildCategoryFragment`. The bundled defaults JSON (read by
+ * `readProjectAgentDefaults` in project.ts) provides the overlay map;
+ * this function is pure and accepts the parsed shape directly.
  */
 
 import type { ProjectBlock } from "./types.ts";
@@ -15,6 +20,23 @@ export interface AgentDescriptor {
 	name?: string;
 	role?: string;
 	description?: string;
+}
+
+/**
+ * Minimal shape of `~/.superhive/project-agent-defaults.json` that
+ * `buildCategoryFragment` consumes. We only model the keys we read;
+ * full schema lives in superhive-pi-truth/settings-schema.ts and the
+ * bundled JSON file shipped by superhive/.
+ */
+export interface ProjectAgentDefaultsOverlay {
+	systemPromptAddition?: string;
+	skills?: string[];
+}
+
+export interface ProjectAgentDefaultsShape {
+	version?: number;
+	base?: unknown;
+	overlays?: Record<string, ProjectAgentDefaultsOverlay>;
 }
 
 export function buildSystemPrompt(project: ProjectBlock, agent: AgentDescriptor): string {
@@ -48,6 +70,54 @@ export function buildRolePromptFragment(role: "coordinator" | "member"): string 
 		"When your session shows `[mail] You have a new direct ask`, call `read_inbox` to see the coordinator's question.",
 		"Then `post_to_project` to reply in the shared project chat so the coordinator and user can see it.",
 	].join(" ");
+}
+
+/**
+ * Build the per-category guidance fragment appended to the coordinator's
+ * system prompt. Pulled from the bundled defaults JSON at
+ * `~/.superhive/project-agent-defaults.json` (parsed shape passed in by
+ * the caller — see `readProjectAgentDefaults` in project.ts).
+ *
+ * Returns "" when:
+ *   - `category` is missing/empty
+ *   - `defaults` is null (file missing/corrupt)
+ *   - the overlay for `category` is missing
+ *   - the overlay's `systemPromptAddition` is empty/whitespace
+ *
+ * The marker guard for idempotency lives in the caller (index.ts). This
+ * function is pure: same inputs → same output, no FS, no Pi API.
+ *
+ * Output shape (markdown):
+ *   ## Category Guidance (<category>)
+ *
+ *   <systemPromptAddition>
+ *
+ *   Category-specific skills:
+ *   - <skill>
+ *   - <skill>
+ *
+ * Skills line is omitted when the overlay has none.
+ */
+export function buildCategoryFragment(
+	category: string | undefined | null,
+	defaults: ProjectAgentDefaultsShape | null,
+): string {
+	const trimmed = category?.trim();
+	if (!trimmed) return "";
+	if (!defaults) return "";
+
+	const overlay = defaults.overlays?.[trimmed];
+	if (!overlay) return "";
+
+	const addition = overlay.systemPromptAddition?.trim();
+	if (!addition) return "";
+
+	const skills = overlay.skills ?? [];
+	const skillsSection = skills.length > 0
+		? `\n\nCategory-specific skills:\n${skills.map((s) => `- ${s}`).join("\n")}`
+		: "";
+
+	return `## Category Guidance (${trimmed})\n\n${addition}${skillsSection}`;
 }
 
 function buildHeader(project: ProjectBlock, agent: AgentDescriptor): string {
