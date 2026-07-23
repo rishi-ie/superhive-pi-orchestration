@@ -1,39 +1,56 @@
 /**
  * Project block read/write helpers + Gap 2 mailbox FS helpers.
  *
- * The coordinator's truth settings file (`<agentRoot>/Superhive-pi-<foldername>.json`)
- * holds an optional `project` block that this extension reads and mutates.
+ * The per-agent truth split puts the coordinator's `project` block on
+ * `<agentRoot>/manage.json`. The orchestrator extension is a read/write
+ * consumer of that block (writes go through the same atomic-write
+ * pattern truth uses, so the truth watcher doesn't loop).
  *
- * Mutations follow truth's atomic-write pattern (tmp + rename + writer-counter
- * bump) so the truth watcher treats self-writes correctly and external writes
- * (status-mirror helper from Electron) trigger our re-read on the next
- * session_start.
+ * Identifiers (name/description) live in manage.json's `identity` block.
+ * The system-prompt edit on coordinator session_start still lands in
+ * `settings.json` (where the runtime reads it).
  *
  * Gap 2 mailbox: the orchestrator writes the same on-disk format as the
  * main-process `electron/mailbox-store.ts`. Two files:
  *   - <projectDir>/agent/chat.jsonl  (project chat — coord and members append)
  *   - <memberDir>/inbox.jsonl        (per-member direct-ask inbox — coord writes)
- * The main-process watcher tails both and wakes recipients on new entries.
  *
- * Ponytail: this extension runs inside a Pi subprocess, so we cannot import
- * from the main process. We duplicate the on-disk pattern (jsonl append,
- * tmp+rename rewrite) here. Format is identical so the watcher treats
- * orchestrator writes and main-process writes indistinguishably.
+ * Ponytail: this extension runs inside a Pi subprocess, so we cannot
+ * import from the main process. We duplicate the on-disk pattern (jsonl
+ * append, tmp+rename rewrite) here. Format is identical so the watcher
+ * treats orchestrator writes and main-process writes indistinguishably.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, basename, join } from "node:path";
-import type { CoordinatorSettingsShape, InboxEntry, MemberRef, MemberStatus, ProjectBlock, MailKind, ChatEntry, TaskPlan, TaskCompleteEntry } from "./types.ts";
+import { dirname, join } from "node:path";
+import type {
+	ChatEntry,
+	CoordinatorSettingsShape,
+	InboxEntry,
+	MailKind,
+	ManageFileShape,
+	MemberRef,
+	MemberStatus,
+	ProjectBlock,
+	TaskCompleteEntry,
+	TaskPlan,
+} from "./types.ts";
 
 const MANAGED_BY_PREFIX = "superhive-pi-truth@1#";
 
 /**
- * Resolve the settings file path for an agent root.
- * Mirrors superhive-pi-truth/settings-schema.ts::settingsFilePathFor.
+ * Resolve manage.json. Mirrors
+ * superhive-pi-truth/settings-schema.ts::truthPathsForAgentDir.manage.
  */
 export function settingsPathFor(agentRoot: string): string {
-	const folder = basename(agentRoot);
-	return join(agentRoot, `Superhive-pi-${folder}.json`);
+	return join(agentRoot, "manage.json");
+}
+
+/**
+ * Resolve settings.json (where the runtime's systemPrompt lives).
+ */
+export function settingsJsonPathFor(agentRoot: string): string {
+	return join(agentRoot, "settings.json");
 }
 
 /**
@@ -45,13 +62,27 @@ export function agentRootFromWorkspace(workspace: string): string {
 }
 
 /**
- * Read the full coordinator settings (or whatever shape is on disk).
- * Returns null if the file is missing or unreadable.
+ * Read manage.json as a loose shape. Returns null if missing or unreadable.
+ * The orchestrator only reads `identity.{name,description}` and `project`.
  */
-export function readSettings(settingsPath: string): CoordinatorSettingsShape | null {
+export function readSettings(settingsPath: string): ManageFileShape | null {
 	if (!existsSync(settingsPath)) return null;
 	try {
 		const raw = readFileSync(settingsPath, "utf8");
+		return JSON.parse(raw) as ManageFileShape;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Read settings.json (the runtime essentials). Only used by the
+ * coordinator session_start to load + write back the CEO prompt.
+ */
+export function readSettingsJson(settingsJsonPath: string): CoordinatorSettingsShape | null {
+	if (!existsSync(settingsJsonPath)) return null;
+	try {
+		const raw = readFileSync(settingsJsonPath, "utf8");
 		return JSON.parse(raw) as CoordinatorSettingsShape;
 	} catch {
 		return null;
@@ -59,20 +90,10 @@ export function readSettings(settingsPath: string): CoordinatorSettingsShape | n
 }
 
 /**
- * Read just the `project` block. Returns null if the file is missing,
- * unreadable, or has no project block (i.e. this agent is not a coordinator).
+ * Atomic write of manage.json with writer-counter bump. Mirrors
+ * superhive-pi-truth/file-io.ts::writeManage.
  */
-export function readProjectBlock(settingsPath: string): ProjectBlock | null {
-	const settings = readSettings(settingsPath);
-	return settings?.project ?? null;
-}
-
-/**
- * Atomic write of the full settings object with writer-counter bump.
- * Mirrors superhive-pi-truth/file-io.ts::writeSettings so the truth watcher
- * recognises our writes as self-writes and skips the diff.
- */
-export function writeSettings(settingsPath: string, settings: CoordinatorSettingsShape): void {
+export function writeSettings(settingsPath: string, settings: ManageFileShape): void {
 	const current = readSettings(settingsPath) ?? {};
 	const prevCounter = parseCounter(current.managedBy as string | undefined);
 	const nextCounter = prevCounter + 1;
@@ -97,7 +118,42 @@ export function writeSettings(settingsPath: string, settings: CoordinatorSetting
 }
 
 /**
- * Replace the project block on disk. Preserves all other fields.
+ * Atomic write of settings.json (for the systemPrompt flow only).
+ */
+export function writeSettingsJson(settingsJsonPath: string, settings: CoordinatorSettingsShape): void {
+	const current = readSettingsJson(settingsJsonPath) ?? {};
+	const prevCounter = parseCounter(current.managedBy as string | undefined);
+	const nextCounter = prevCounter + 1;
+	const next = {
+		...settings,
+		managedBy: `${MANAGED_BY_PREFIX}${nextCounter}`,
+		lastModified: new Date().toISOString(),
+	};
+	const serialized = `${JSON.stringify(next, null, "\t")}\n`;
+	const tmp = `${settingsJsonPath}.${process.pid}.${Date.now()}.tmp`;
+	writeFileSync(tmp, serialized, "utf8");
+	try {
+		renameSync(tmp, settingsJsonPath);
+	} catch (err) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// ignore
+		}
+		throw err;
+	}
+}
+
+/**
+ * Read just the `project` block from manage.json. Returns null if missing.
+ */
+export function readProjectBlock(settingsPath: string): ProjectBlock | null {
+	const settings = readSettings(settingsPath);
+	return settings?.project ?? null;
+}
+
+/**
+ * Replace the project block on disk. Preserves all other manage.json fields.
  */
 export function writeProjectBlock(settingsPath: string, project: ProjectBlock): void {
 	const current = readSettings(settingsPath) ?? {};
@@ -200,10 +256,6 @@ export interface ReadProjectChatOpts {
 /**
  * Read the project chat, returning the most recent N entries that match
  * the filter. Malformed lines are skipped (logged, not thrown).
- *
- * - `excludeDeliveredTo` filters out entries where `deliveredTo` already
- *   contains the given agentId. Used by the coordinator's read_inbox to
- *   avoid re-reading entries it has already processed.
  */
 export function readProjectChat(projectDir: string, opts: ReadProjectChatOpts = {}): ChatEntry[] {
 	const path = chatFilePath(projectDir);
@@ -249,8 +301,7 @@ export function readProjectChat(projectDir: string, opts: ReadProjectChatOpts = 
 }
 
 /**
- * Add agentId to a chat entry's `deliveredTo[]` (idempotent). Atomic rewrite
- * via tmp+rename. Returns true if a mutation occurred.
+ * Add agentId to a chat entry's `deliveredTo[]` (idempotent).
  */
 export function markChatDelivered(projectDir: string, messageId: string, agentId: string): boolean {
 	const path = chatFilePath(projectDir)
@@ -353,8 +404,7 @@ export function readMemberInbox(memberDir: string, opts: ReadMemberInboxOpts = {
 }
 
 /**
- * Flip a specific inbox entry's status from `pending` to `acked`. Atomic
- * rewrite via tmp+rename. Returns true if a mutation occurred.
+ * Flip a specific inbox entry's status from `pending` to `acked`.
  */
 export function ackInboxMessage(memberDir: string, messageId: string): boolean {
 	const path = inboxFilePath(memberDir)
@@ -402,11 +452,6 @@ export function ackInboxMessage(memberDir: string, messageId: string): boolean {
 
 /**
  * Write a plan to `<coordDir>/tasks-plan.json` (atomic: tmp + rename).
- * The main-process tailer ingests the plan into `db.tasks.json`, then
- * truncates the file. ponytail: same tmp+rename pattern as the truth
- * settings file, no lock file, no backup. PIPE_BUF-safe for plans
- * with ≤ ~4000 task entries; larger plans fall back to non-atomic
- * which the OS still serializes per write call.
  */
 export function writeTaskPlan(coordDir: string, plan: TaskPlan): void {
   const target = join(coordDir, "tasks-plan.json")
@@ -422,10 +467,6 @@ export function writeTaskPlan(coordDir: string, plan: TaskPlan): void {
 
 /**
  * Append a completion entry to `<coordDir>/tasks-complete.jsonl`.
- * The main-process tailer ingests each line as a `changeStatus`
- * call, then truncates the file. JSONL append via appendFileSync
- * is atomic for writes < PIPE_BUF (4096 bytes) — the typical
- * summary fits well under that.
  */
 export function appendTaskComplete(coordDir: string, entry: TaskCompleteEntry): void {
   const target = join(coordDir, "tasks-complete.jsonl")

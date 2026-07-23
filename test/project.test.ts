@@ -57,12 +57,11 @@ const sampleProject: ProjectBlock = {
 	members: [sampleMember],
 };
 
-test("settingsPathFor: derives path from agent root basename", () => {
+test("settingsPathFor: returns <agentRoot>/manage.json", () => {
 	const { root, cleanup } = tempAgentDir();
 	try {
 		const p = settingsPathFor(root);
-		const folder = root.split("/").pop();
-		assert.equal(p, join(root, `Superhive-pi-${folder}.json`));
+		assert.equal(p, join(root, "manage.json"));
 	} finally {
 		cleanup();
 	}
@@ -101,14 +100,14 @@ test("readProjectBlock: returns null when project block missing", () => {
 test("writeSettings: creates file and bumps counter on each write", () => {
 	const { settingsPath, cleanup } = tempAgentDir();
 	try {
-		writeSettings(settingsPath, { name: "v1" });
+		writeSettings(settingsPath, { identity: { name: "v1" } });
 		const first = JSON.parse(readFileSync(settingsPath, "utf8"));
-		assert.equal(first.name, "v1");
+		assert.equal(first.identity.name, "v1");
 		assert.match(first.managedBy, /^superhive-pi-truth@1#1$/);
 
-		writeSettings(settingsPath, { name: "v2" });
+		writeSettings(settingsPath, { identity: { name: "v2" } });
 		const second = JSON.parse(readFileSync(settingsPath, "utf8"));
-		assert.equal(second.name, "v2");
+		assert.equal(second.identity.name, "v2");
 		assert.match(second.managedBy, /^superhive-pi-truth@1#2$/);
 		assert.ok(second.lastModified);
 	} finally {
@@ -127,14 +126,16 @@ test("writeProjectBlock: round-trips through readProjectBlock", () => {
 	}
 });
 
-test("writeProjectBlock: preserves other settings fields", () => {
+test("writeProjectBlock: preserves other manage.json fields", () => {
 	const { settingsPath, cleanup } = tempAgentDir();
 	try {
-		writeSettings(settingsPath, { name: "Coordinator", description: "The boss" });
+		writeSettings(settingsPath, {
+			identity: { name: "Coordinator", description: "The boss" },
+		});
 		writeProjectBlock(settingsPath, sampleProject);
 		const settings = readSettings(settingsPath);
-		assert.equal(settings?.name, "Coordinator");
-		assert.equal(settings?.description, "The boss");
+		assert.equal(settings?.identity?.name, "Coordinator");
+		assert.equal(settings?.identity?.description, "The boss");
 		assert.deepEqual(settings?.project, sampleProject);
 	} finally {
 		cleanup();
@@ -229,7 +230,7 @@ test("removeMember: no-op for unknown member", () => {
 test("atomic write: leaves no .tmp files behind", () => {
 	const { root, settingsPath, cleanup } = tempAgentDir();
 	try {
-		writeSettings(settingsPath, { name: "x" });
+		writeSettings(settingsPath, { identity: { name: "x" } });
 		const files = readdirSync(root);
 		const tmpLeftovers = files.filter((f: string) => f.endsWith(".tmp"));
 		assert.equal(tmpLeftovers.length, 0);

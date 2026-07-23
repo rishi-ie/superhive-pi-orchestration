@@ -291,7 +291,7 @@ function postToProject(opts: RegisterOpts) {
 				role: "assistant",
 				parts: [{ type: "text", text: params.body }],
 				fromAgentId: process.env.AGENT_ID ?? undefined,
-				fromAgentName: settings?.name,
+				fromAgentName: settings?.identity?.name,
 				kind: (params.kind as MailKind) ?? "request",
 				refMessageId: params.refMessageId,
 			};

@@ -37,16 +37,30 @@ export interface ProjectBlock {
 }
 
 /**
- * Minimal shape of the truth settings file we care about. We do not import
- * the full `SettingsFile` from truth because (a) it would create a build
- * dep and (b) the truth module is bundled into the agent independently.
+ * Minimal shape of manage.json we care about (the `project` block and
+ * the `identity` block carry name/description; agent `role` is on the
+ * AgentRepository row, not truth). We do not import the full
+ * `ManageFile` from truth because that would create a build dep and
+ * the truth module is bundled into the agent independently.
+ */
+export interface ManageFileShape {
+	version?: number;
+	identity?: {
+		name?: string;
+		description?: string;
+		workspace?: string;
+	};
+	project?: ProjectBlock;
+	managedBy?: string;
+	lastModified?: string;
+}
+
+/**
+ * Minimal shape of settings.json we care about — only the systemPrompt
+ * flow reads/writes here. We do not import the full `SettingsFile`.
  */
 export interface CoordinatorSettingsShape {
-	name?: string;
-	description?: string;
-	role?: string;
 	systemPrompt?: string;
-	project?: ProjectBlock;
 	managedBy?: string;
 	lastModified?: string;
 }

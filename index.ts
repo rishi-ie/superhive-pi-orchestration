@@ -3,19 +3,20 @@
  *
  * Gap 2 change: the gate is no longer "AGENT_KIND === 'project-coordinator'".
  * The extension now loads for any project member and detects role by
- * comparing AGENT_ID against settings.project.coordinatorAgentId.
+ * comparing AGENT_ID against project.coordinatorAgentId.
+ *
+ * 4-file truth split:
+ *   - manage.json holds the `project` block + identity.{name,description}
+ *   - settings.json holds the runtime systemPrompt
  *
  * On `session_start`:
- *   1. Read the truth settings file. If the `project` block is missing,
- *      no-op (the agent isn't a project member).
- *   2. Determine role:
- *        - isCoordinator: AGENT_ID === project.coordinatorAgentId
- *        - isMember:      AGENT_ID !== project.coordinatorAgentId
- *   3. If isCoordinator: build the CEO system prompt and write it back
- *      to `settings.systemPrompt`. Register all 5 tools.
- *   4. If isMember: append a one-line role fragment to the existing
- *      `settings.systemPrompt` (idempotent — marker-guarded). Register
- *      only `read_inbox` and `post_to_project`.
+ *   1. Read manage.json. If `project` is missing, no-op.
+ *   2. Determine role by AGENT_ID === project.coordinatorAgentId.
+ *   3. Coordinator: build the CEO prompt and write it back to
+ *      settings.json's systemPrompt. Register all 7 tools.
+ *   4. Member: append a one-line role fragment to settings.json's
+ *      systemPrompt (idempotent — marker-guarded). Register only
+ *      read_inbox + post_to_project.
  *
  * Standalone agents (no project block) exit at step 1 with zero side
  * effects. The orchestrator's tools never reach their model context.
@@ -25,9 +26,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	agentRootFromWorkspace,
 	readProjectBlock,
-	settingsPathFor,
 	readSettings,
-	writeSettings,
+	readSettingsJson,
+	settingsJsonPathFor,
+	settingsPathFor,
+	writeSettingsJson,
 } from "./project.ts";
 import { buildRolePromptFragment, buildSystemPrompt } from "./system-prompt.ts";
 import { registerOrchestrationTools } from "./tools.ts";
@@ -45,9 +48,10 @@ export default function superhivePiOrchestration(pi: ExtensionAPI): void {
 		}
 
 		const agentRoot = agentRootFromWorkspace(workspace);
-		const settingsPath = settingsPathFor(agentRoot);
+		const managePath = settingsPathFor(agentRoot);
+		const settingsJsonPath = settingsJsonPathFor(agentRoot);
 
-		const project = readProjectBlock(settingsPath);
+		const project = readProjectBlock(managePath);
 		if (!project || !project.localPath || !project.coordinatorAgentId) {
 			// Not a project member (no project block, or missing
 			// coordinatorAgentId from an older settings file).
@@ -65,38 +69,36 @@ export default function superhivePiOrchestration(pi: ExtensionAPI): void {
 		const role = isCoordinator ? "coordinator" : "member";
 
 		if (isCoordinator) {
-			// Build the CEO system prompt and write it back to the
-			// settings file. Members keep the standard agent prompt
-			// (with the role fragment appended — see below).
-			const settings = readSettings(settingsPath);
+			// Build the CEO system prompt and write it back to settings.json.
+			// Identity fields come from manage.json; the prompt itself lands
+			// in settings.json so the runtime reads it on session_start.
+			const manage = readSettings(managePath);
 			const agent = {
-				name: settings?.name,
-				role: settings?.role,
-				description: settings?.description,
+				name: manage?.identity?.name,
+				description: manage?.identity?.description,
 			};
 			const prompt = buildSystemPrompt(project, agent);
-			if (settings) {
-				writeSettings(settingsPath, { ...settings, systemPrompt: prompt });
+			const settingsJson = readSettingsJson(settingsJsonPath);
+			if (settingsJson) {
+				writeSettingsJson(settingsJsonPath, { ...settingsJson, systemPrompt: prompt });
 			}
 		} else {
-			// Member: append a one-line role fragment to systemPrompt
-			// (idempotent). We never overwrite the user's prompt; we
-			// just add ours after it, with a marker so subsequent
-			// session_starts no-op.
-			const settings = readSettings(settingsPath);
-			if (settings) {
-				const current = settings.systemPrompt ?? "";
+			// Member: append a one-line role fragment to settings.json's
+			// systemPrompt (idempotent).
+			const settingsJson = readSettingsJson(settingsJsonPath);
+			if (settingsJson) {
+				const current = settingsJson.systemPrompt ?? "";
 				const marker = `${ROLE_FRAGMENT_MARKER}${role}]`;
 				if (!current.includes(marker)) {
 					const fragment = buildRolePromptFragment(role);
 					const next = current
 						? `${current}\n\n${fragment}${marker}`
 						: `${fragment}${marker}`;
-					writeSettings(settingsPath, { ...settings, systemPrompt: next });
+					writeSettingsJson(settingsJsonPath, { ...settingsJson, systemPrompt: next });
 				}
 			}
 		}
 
-		registerOrchestrationTools(pi, { role, settingsPath, project });
+		registerOrchestrationTools(pi, { role, settingsPath: managePath, project });
 	});
 }
