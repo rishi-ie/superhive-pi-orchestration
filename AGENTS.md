@@ -16,7 +16,7 @@
  *      - member:      AGENT_ID !== project.coordinatorAgentId
  *    Standard agents (no project block) must never see my tools.
  * 2. Pure filesystem backing. My tools read the truth settings file
- *    `<agentRoot>/Superhive-pi-<foldername>.json` directly. I never open
+ *    `<agentRoot>/manage.json` directly. I never open
  *    a socket, never spawn a subprocess, never call into Electron. The
  *    mailbox files I read/write are:
  *      - <projectDir>/agent/chat.jsonl — the project chat (read/write)
