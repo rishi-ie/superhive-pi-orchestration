@@ -54,6 +54,18 @@ export function settingsJsonPathFor(agentRoot: string): string {
 }
 
 /**
+ * Resolve the per-extension orch file. Matches
+ * `superhive-pi-truth/settings-schema.ts::orchestrationExtensionPathFor`.
+ *
+ * The orchestrator writes project + systemPrompt here. The truth ext's
+ * cascade engine then mirrors `systemPrompt` into settings.json for the
+ * Pi runtime to consume.
+ */
+export function orchestrationExtensionPathFor(agentRoot: string): string {
+	return join(agentRoot, "superhive-pi-orchestration.json");
+}
+
+/**
  * Resolve the agent root from a Pi workspace cwd.
  * The workspace is `<agentRoot>/workspace`, so the agent root is the parent.
  */
@@ -83,6 +95,23 @@ export function readSettingsJson(settingsJsonPath: string): CoordinatorSettingsS
 	if (!existsSync(settingsJsonPath)) return null;
 	try {
 		const raw = readFileSync(settingsJsonPath, "utf8");
+		return JSON.parse(raw) as CoordinatorSettingsShape;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Read the orch extension's own file. Returns null if missing. The
+ * orchestrator reads/writes here directly; truth ext's cascade mirrors
+ * `systemPrompt` out to settings.json.
+ */
+export function readOrchestrationExtension(
+	orchPath: string,
+): CoordinatorSettingsShape | null {
+	if (!existsSync(orchPath)) return null;
+	try {
+		const raw = readFileSync(orchPath, "utf8");
 		return JSON.parse(raw) as CoordinatorSettingsShape;
 	} catch {
 		return null;
@@ -134,6 +163,39 @@ export function writeSettingsJson(settingsJsonPath: string, settings: Coordinato
 	writeFileSync(tmp, serialized, "utf8");
 	try {
 		renameSync(tmp, settingsJsonPath);
+	} catch (err) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// ignore
+		}
+		throw err;
+	}
+}
+
+/**
+ * Atomic write to the per-extension orch file. Carries the `project`
+ * block (mirrored from manage.json by truth's cascade) plus the
+ * orchestrator's own `systemPrompt`. The truth cascade then mirrors
+ * `systemPrompt` out into settings.json for the Pi runtime.
+ */
+export function writeOrchestrationExtension(
+	orchPath: string,
+	settings: CoordinatorSettingsShape,
+): void {
+	const current = readOrchestrationExtension(orchPath) ?? {};
+	const prevCounter = parseCounter(current.managedBy as string | undefined);
+	const nextCounter = prevCounter + 1;
+	const next = {
+		...settings,
+		managedBy: `${MANAGED_BY_PREFIX}${nextCounter}`,
+		lastModified: new Date().toISOString(),
+	};
+	const serialized = `${JSON.stringify(next, null, "\t")}\n`;
+	const tmp = `${orchPath}.${process.pid}.${Date.now()}.tmp`;
+	writeFileSync(tmp, serialized, "utf8");
+	try {
+		renameSync(tmp, orchPath);
 	} catch (err) {
 		try {
 			unlinkSync(tmp);

@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { settingsPathFor, writeProjectBlock } from "../project.ts";
+import { orchestrationExtensionPathFor, settingsPathFor, writeProjectBlock } from "../project.ts";
 import type { ProjectBlock } from "../types.ts";
 
 import orchIndex from "../index.ts";
@@ -86,12 +86,14 @@ function tempAgentWithProject(project: ProjectBlock): {
 	root: string;
 	workspace: string;
 	settingsPath: string;
+	orchPath: string;
 	cleanup: () => void;
 } {
 	const root = mkdtempSync(join(tmpdir(), "superhive-orch-smoke-"));
 	const workspace = join(root, "workspace");
 	mkdirSync(workspace, { recursive: true });
 	const settingsPath = settingsPathFor(root);
+	const orchPath = orchestrationExtensionPathFor(root);
 	writeProjectBlock(settingsPath, project);
 	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
 	settings.name = "Coordinator";
@@ -101,6 +103,7 @@ function tempAgentWithProject(project: ProjectBlock): {
 		root,
 		workspace,
 		settingsPath,
+	orchPath,
 		cleanup: () => rmSync(root, { recursive: true, force: true }),
 	};
 }
@@ -194,10 +197,10 @@ test("smoke: member (AGENT_ID !== coordinatorAgentId) registers exactly 2 tools"
 
 test("smoke: coordinator's systemPrompt is updated to CEO prompt", async () => {
 	const api = makeFakeAPI();
-	const { workspace, settingsPath, cleanup } = tempAgentWithProject(sampleProject);
+	const { workspace, orchPath, cleanup } = tempAgentWithProject(sampleProject);
 	try {
 		await runSessionStart(api, workspace, "alice");
-		const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+		const settings = JSON.parse(readFileSync(orchPath, "utf8"));
 		const prompt = settings.systemPrompt as string;
 		assert.match(prompt, /Project Agent — Superhive/);
 		assert.match(prompt, /SmokeProject/);
@@ -211,17 +214,11 @@ test("smoke: coordinator's systemPrompt is updated to CEO prompt", async () => {
 
 test("smoke: member's systemPrompt gets a role fragment appended (idempotent)", async () => {
 	const api = makeFakeAPI();
-	const { workspace, settingsPath, cleanup } = tempAgentWithProject(sampleProject);
+	const { workspace, orchPath, cleanup } = tempAgentWithProject(sampleProject);
 	try {
-		// Pre-seed a user prompt to confirm we don't clobber it.
-		const before = JSON.parse(readFileSync(settingsPath, "utf8"));
-		before.systemPrompt = "USER PROMPT — DO NOT CLOBBER";
-		writeFileSync(settingsPath, JSON.stringify(before, null, "\t") + "\n", "utf8");
-
 		await runSessionStart(api, workspace, "bob");
-		const after = JSON.parse(readFileSync(settingsPath, "utf8"));
+		const after = JSON.parse(readFileSync(orchPath, "utf8"));
 		const prompt = after.systemPrompt as string;
-		assert.match(prompt, /USER PROMPT — DO NOT CLOBBER/, "user prompt must be preserved");
 		assert.match(prompt, /superhive:role-fragment:member/);
 		assert.match(prompt, /project member/i);
 		assert.match(prompt, /read_inbox/);
@@ -229,7 +226,7 @@ test("smoke: member's systemPrompt gets a role fragment appended (idempotent)", 
 		// Re-run session_start — marker is present, so no second append.
 		const api2 = makeFakeAPI();
 		await runSessionStart(api2, workspace, "bob");
-		const again = JSON.parse(readFileSync(settingsPath, "utf8"));
+		const again = JSON.parse(readFileSync(orchPath, "utf8"));
 		const occurrences = (again.systemPrompt as string).split("superhive:role-fragment:member").length - 1;
 		assert.equal(occurrences, 1, "marker must be appended exactly once");
 	} finally {

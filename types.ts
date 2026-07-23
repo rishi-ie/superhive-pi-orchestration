@@ -58,11 +58,18 @@ export interface ManageFileShape {
 /**
  * Minimal shape of settings.json we care about — only the systemPrompt
  * flow reads/writes here. We do not import the full `SettingsFile`.
+ *
+ * After the per-extension split, the orchestrator writes systemPrompt +
+ * roleFragmentAppended to `<agentRoot>/superhive-pi-orchestration.json`
+ * (its own file). This type is reused for both files — the orch file's
+ * `systemPrompt`/`roleFragmentAppended` and settings.json's
+ * `systemPrompt` (cascaded in by truth ext).
  */
 export interface CoordinatorSettingsShape {
 	systemPrompt?: string;
 	managedBy?: string;
 	lastModified?: string;
+	roleFragmentAppended?: "coordinator" | "member" | null;
 }
 
 /** Mail message kind — used by tools and shared with the IPC layer. */
