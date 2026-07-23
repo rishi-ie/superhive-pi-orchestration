@@ -237,12 +237,13 @@ export function readProjectBlock(settingsPath: string): ProjectBlock | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical location of the bundled defaults file as populated by the
- * main process at startup. Mirrors
- * superhive/electron/install-project-agent-defaults.ts::USER_DEFAULTS_PATH.
+ * Resolve the canonical defaults file path. Reads HOME at call-time so
+ * tests can mutate process.env.HOME between calls (the path is computed
+ * on each invocation rather than pinned at module-load).
  */
-export const PROJECT_AGENT_DEFAULTS_PATH =
-	`${process.env.HOME ?? ""}/.superhive/project-agent-defaults.json`;
+export function projectAgentDefaultsPath(): string {
+	return `${process.env.HOME ?? ""}/.superhive/project-agent-defaults.json`;
+}
 
 /**
  * Minimal shape we consume — matches the bundled JSON shipped at
@@ -257,10 +258,11 @@ export interface ProjectAgentDefaultsShape {
 }
 
 export function readProjectAgentDefaults(): ProjectAgentDefaultsShape | null {
-	if (!PROJECT_AGENT_DEFAULTS_PATH) return null;
-	if (!existsSync(PROJECT_AGENT_DEFAULTS_PATH)) return null;
+	const path = projectAgentDefaultsPath();
+	if (!path || path === "/.superhive/project-agent-defaults.json") return null;
+	if (!existsSync(path)) return null;
 	try {
-		const raw = readFileSync(PROJECT_AGENT_DEFAULTS_PATH, "utf8");
+		const raw = readFileSync(path, "utf8");
 		return JSON.parse(raw) as ProjectAgentDefaultsShape;
 	} catch {
 		return null;
