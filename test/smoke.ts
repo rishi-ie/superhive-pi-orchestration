@@ -167,18 +167,6 @@ function withFakeDefaults(
 	});
 }
 
-function setIdentityCategory(settingsPath: string, category: string | undefined): void {
-	const current = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-	const identity = (current.identity as Record<string, unknown> | undefined) ?? {};
-	if (category === undefined) {
-		delete identity.category;
-	} else {
-		identity.category = category;
-	}
-	current.identity = identity;
-	writeSettings(settingsPath, current as Parameters<typeof writeSettings>[1]);
-}
-
 function getOrchPrompt(orchPath: string): { systemPrompt: string; roleFragmentAppended: string | null } {
 	const raw = JSON.parse(readFileSync(orchPath, "utf8")) as {
 		systemPrompt?: string;
@@ -363,24 +351,6 @@ test("smoke: post_to_project appends a chat entry on disk", async () => {
 	}
 });
 
-test("smoke: 'general' category (empty overlay) does NOT append a fragment", async () => {
-	await withFakeDefaults({
-		overlays: { general: { systemPromptAddition: "", skills: [] } },
-	}, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "general");
-			await runSessionStart(api, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.doesNotMatch(systemPrompt, /## Category Guidance/);
-			assert.equal(roleFragmentAppended, "coordinator");
-		} finally {
-			cleanup();
-		}
-	});
-});
-
 // ---------------------------------------------------------------------------
 // Phase J smoke tests — dynamic system prompt
 // ---------------------------------------------------------------------------
@@ -535,160 +505,6 @@ test("smoke: rebuildSystemPrompt is idempotent — re-running does NOT bump coun
 	} finally {
 		cleanup();
 	}
-});
-
-// ---------------------------------------------------------------------------
-// Phase B smoke tests — category fragment append / replace / strip
-// ---------------------------------------------------------------------------
-
-const RESEARCH_OVERLAY = {
-	systemPromptAddition: "Prioritize literature reviews and citation hygiene.",
-	skills: ["summarize", "research-paper-format"],
-};
-
-const MARKETING_OVERLAY = {
-	systemPromptAddition: "Optimize for messaging clarity.",
-	skills: ["copywriting-frameworks"],
-};
-
-test("smoke: coordinator with identity.category='research' gets category fragment", async () => {
-	await withFakeDefaults({ overlays: { research: RESEARCH_OVERLAY } }, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "research");
-			await runSessionStart(api, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.match(systemPrompt, /## Category Guidance \(research\)/);
-			assert.match(systemPrompt, /Prioritize literature reviews/);
-			assert.match(systemPrompt, /superhive:category-fragment:research\]/);
-			assert.equal(roleFragmentAppended, "category:research");
-		} finally {
-			cleanup();
-		}
-	});
-});
-
-test("smoke: re-running session_start with same category does NOT double-append", async () => {
-	await withFakeDefaults({ overlays: { research: RESEARCH_OVERLAY } }, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "research");
-			await runSessionStart(api, workspace, "alice");
-			const first = getOrchPrompt(orchPath);
-
-			const api2 = makeFakeAPI();
-			await runSessionStart(api2, workspace, "alice");
-			const second = getOrchPrompt(orchPath);
-
-			const firstCount = first.systemPrompt.split("superhive:category-fragment:research").length - 1;
-			const secondCount = second.systemPrompt.split("superhive:category-fragment:research").length - 1;
-			assert.equal(firstCount, 1);
-			assert.equal(secondCount, 1);
-		} finally {
-			cleanup();
-		}
-	});
-});
-
-test("smoke: changing category from research to marketing replaces the fragment", async () => {
-	await withFakeDefaults({
-		overlays: { research: RESEARCH_OVERLAY, marketing: MARKETING_OVERLAY },
-	}, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			// 1) Start with research
-			setIdentityCategory(settingsPath, "research");
-			await runSessionStart(api, workspace, "alice");
-			const researchPrompt = getOrchPrompt(orchPath).systemPrompt;
-			assert.match(researchPrompt, /Prioritize literature reviews/);
-			assert.match(researchPrompt, /superhive:category-fragment:research\]/);
-
-			// 2) Switch to marketing
-			setIdentityCategory(settingsPath, "marketing");
-			const api2 = makeFakeAPI();
-			await runSessionStart(api2, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.match(systemPrompt, /Optimize for messaging clarity/);
-			assert.match(systemPrompt, /superhive:category-fragment:marketing\]/);
-			assert.equal(roleFragmentAppended, "category:marketing");
-			// Old research content must be stripped
-			assert.doesNotMatch(systemPrompt, /Prioritize literature reviews/);
-			assert.doesNotMatch(systemPrompt, /superhive:category-fragment:research\]/);
-		} finally {
-			cleanup();
-		}
-	});
-});
-
-test("smoke: removing identity.category strips the fragment + resets marker", async () => {
-	await withFakeDefaults({ overlays: { research: RESEARCH_OVERLAY } }, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "research");
-			await runSessionStart(api, workspace, "alice");
-			assert.match(getOrchPrompt(orchPath).systemPrompt, /Category Guidance/);
-
-			setIdentityCategory(settingsPath, undefined);
-			const api2 = makeFakeAPI();
-			await runSessionStart(api2, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.doesNotMatch(systemPrompt, /## Category Guidance/);
-			assert.doesNotMatch(systemPrompt, /superhive:category-fragment:/);
-			assert.equal(roleFragmentAppended, "coordinator");
-		} finally {
-			cleanup();
-		}
-	});
-});
-
-test("smoke: missing bundled defaults file → no fragment, no crash", async () => {
-	// Point HOME at an empty dir so ~/.superhive/project-agent-defaults.json
-	// doesn't exist. Doesn't use withFakeDefaults.
-	const originalHome = process.env.HOME;
-	const fakeHome = mkdtempSync(join(tmpdir(), "superhive-orch-empty-home-"));
-	process.env.HOME = fakeHome;
-	try {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "research");
-			await runSessionStart(api, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.doesNotMatch(systemPrompt, /Category Guidance/);
-			assert.equal(roleFragmentAppended, "coordinator");
-		} finally {
-			cleanup();
-		}
-	} finally {
-		if (originalHome === undefined) {
-			delete process.env.HOME;
-		} else {
-			process.env.HOME = originalHome;
-		}
-		rmSync(fakeHome, { recursive: true, force: true });
-	}
-});
-
-test("smoke: 'general' category (empty overlay) does NOT append a fragment", async () => {
-	await withFakeDefaults({
-		overlays: { general: { systemPromptAddition: "", skills: [] } },
-	}, async () => {
-		const api = makeFakeAPI();
-		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
-		try {
-			setIdentityCategory(settingsPath, "general");
-			await runSessionStart(api, workspace, "alice");
-			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
-			assert.doesNotMatch(systemPrompt, /## Category Guidance/);
-			assert.equal(roleFragmentAppended, "coordinator");
-		} finally {
-			cleanup();
-		}
-	});
 });
 
 // Reference homedir so the import is not pruned even when smoke tests

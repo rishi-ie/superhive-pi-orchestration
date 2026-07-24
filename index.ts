@@ -43,7 +43,6 @@ import {
 	planExtensionPathFor,
 	readOrchestrationExtension,
 	readPlanExtension,
-	readProjectAgentDefaults,
 	readProjectBlock,
 	readSettings,
 	settingsJsonPathFor,
@@ -53,7 +52,6 @@ import {
 	writeSettingsJson,
 } from "./project.ts";
 import {
-	buildCategoryFragment,
 	buildRolePromptFragment,
 	buildSystemPrompt,
 	type PlanModeSnapshot,
@@ -65,9 +63,6 @@ import { registerOrchestrationTools } from "./tools.ts";
 // Marker in the systemPrompt that records which role's fragment is appended.
 // Used to keep the append idempotent across session_starts.
 const ROLE_FRAGMENT_MARKER = "\n[superhive:role-fragment:";
-// Phase B: marker for category fragments. Same idempotency pattern — we
-// look for the marker in the systemPrompt before re-appending.
-const CATEGORY_FRAGMENT_MARKER = "\n[superhive:category-fragment:";
 
 // Per-agent file watcher debounce (ms). Matches the truth ext's
 // per-file debounce.
@@ -95,7 +90,6 @@ function readSettingsFromFile(p: string): { systemPrompt?: string } | null {
  *                          skills, extensions[]
  *   - superhive-pi-plan.json  — planMode block (when present)
  *   - superhive-pi-spawn.json — enabled, allowedTemplates, requireApproval
- *   - ~/.superhive/project-agent-defaults.json — category overlays
  *
  * Returns null when there's no project block (caller should skip
  * the rebuild — not a project agent).
@@ -150,7 +144,7 @@ export function assembleSystemPromptInputs(
 			role: manage?.identity?.role,
 			description: manage?.identity?.description,
 		},
-		identity: { category: manage?.identity?.category },
+		identity: {},
 		permissions,
 		behavior: {
 			autoCompaction: behavior.autoCompaction,
@@ -167,7 +161,6 @@ export function assembleSystemPromptInputs(
 		},
 		planMode,
 		spawnConfig,
-		defaults: readProjectAgentDefaults(),
 	};
 }
 
@@ -208,58 +201,19 @@ export function rebuildSystemPrompt(agentRoot: string): string | null {
 }
 
 /**
- * Build the system prompt from inputs, apply the category fragment
- * with the existing marker-guarded idempotency, and write to the
- * orch file. The `roleFragmentAppended` field on the orch file
- * tracks the last category fragment so subsequent rebuilds can
- * detect changes and strip stale fragments.
+ * Build the system prompt from inputs and write to the orch file.
+ * The `roleFragmentAppended` field is set to `"coordinator"` (or
+ * `"member"` in the member path) — no category marker.
  *
  * Idempotent: when the rebuilt prompt + marker are byte-equivalent
  * to what's already on disk, the write is skipped (no counter
  * bump). Matches the truth cascade's deep-equal check so the
  * file's `managedBy` counter doesn't churn on every rebuild.
  */
-function writeSystemPromptFromInputs(inputs: SystemPromptInputs, agentRoot: string): string {
-	const basePrompt = buildSystemPrompt(inputs);
-
-	// Apply the same category fragment + marker logic that
-	// session_start used to inline. We strip the old fragment if
-	// the category changed.
+function writeSystemPromptFromInputs(inputs: SystemPromptInputs, agentRoot: string, roleMarker: string = "coordinator"): string {
+	const prompt = buildSystemPrompt(inputs);
 	const orchPath = orchestrationExtensionPathFor(agentRoot);
 	const current = readOrchestrationExtension(orchPath) ?? {};
-	const currentMarker = current.roleFragmentAppended ?? null;
-	const category = inputs.identity.category;
-	const categoryChanged =
-		typeof currentMarker === "string" &&
-		currentMarker.startsWith("category:") &&
-		currentMarker !== `category:${category ?? ""}`;
-
-	let prompt = basePrompt;
-	let roleMarker: string = "coordinator";
-
-	if (category) {
-		const fragment = buildCategoryFragment(category, inputs.defaults);
-		if (fragment) {
-			const marker = `${CATEGORY_FRAGMENT_MARKER}${category}]`;
-			const existingMarker = `${CATEGORY_FRAGMENT_MARKER}${
-				typeof currentMarker === "string" && currentMarker.startsWith("category:")
-					? currentMarker.slice("category:".length)
-					: ""
-			}]`;
-			const alreadyHasMarker =
-				prompt.includes(marker) ||
-				(existingMarker !== marker && prompt.includes(existingMarker));
-
-			if (!alreadyHasMarker || categoryChanged) {
-				const stripped = stripCategoryFragment(prompt);
-				prompt = `${stripped}${fragment}${marker}`;
-			}
-			roleMarker = `category:${category}`;
-		}
-	} else if (typeof currentMarker === "string" && currentMarker.startsWith("category:")) {
-		prompt = stripCategoryFragment(prompt);
-		roleMarker = "coordinator";
-	}
 
 	// Idempotency check: skip the write when the rebuilt content
 	// matches the on-disk orch file. This avoids counter churn on
@@ -282,26 +236,6 @@ function writeSystemPromptFromInputs(inputs: SystemPromptInputs, agentRoot: stri
 	}
 
 	return prompt;
-}
-
-/**
- * Strip the most-recently-appended category fragment from a
- * systemPrompt. Used when the category changes (or is removed) so
- * the prompt reflects only the current category. We slice from
- * the `## Category Guidance` heading to the marker line — both are
- * well-defined substrings written by buildCategoryFragment.
- */
-function stripCategoryFragment(prompt: string): string {
-	const headingIdx = prompt.indexOf("## Category Guidance (");
-	if (headingIdx === -1) return prompt;
-	const markerIdx = prompt.indexOf(CATEGORY_FRAGMENT_MARKER, headingIdx);
-	if (markerIdx === -1) return prompt;
-	const markerEnd = prompt.indexOf("]", markerIdx);
-	if (markerEnd === -1) return prompt;
-	const endOfLine = prompt.indexOf("\n", markerEnd);
-	const sliceEnd = endOfLine === -1 ? prompt.length : endOfLine;
-	const before = prompt.slice(0, headingIdx).replace(/\s+$/, "");
-	return before + prompt.slice(sliceEnd).replace(/^\n+/, "");
 }
 
 // ---------------------------------------------------------------------------

@@ -35,23 +35,6 @@ export interface AgentDescriptor {
 }
 
 /**
- * Minimal shape of `~/.superhive/project-agent-defaults.json` that
- * `buildCategoryFragment` consumes. We only model the keys we read;
- * full schema lives in superhive-pi-truth/settings-schema.ts and the
- * bundled JSON file shipped by superhive/.
- */
-export interface ProjectAgentDefaultsOverlay {
-	systemPromptAddition?: string;
-	skills?: string[];
-}
-
-export interface ProjectAgentDefaultsShape {
-	version?: number;
-	base?: unknown;
-	overlays?: Record<string, ProjectAgentDefaultsOverlay>;
-}
-
-/**
  * Minimal shape of `manage.json.permissions` — read by the rebuild
  * to drive the explicit Permissions section. We mirror truth's
  * shape but don't import the full schema.
@@ -112,7 +95,6 @@ export interface SystemPromptInputs {
 	};
 	planMode: PlanModeSnapshot | null;
 	spawnConfig: SpawnConfigSnapshot | null;
-	defaults: ProjectAgentDefaultsShape | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,45 +151,6 @@ export function buildRolePromptFragment(role: "coordinator" | "member"): string 
 		"When your session shows `[mail] You have a new direct ask`, call `read_inbox` to see the coordinator's question.",
 		"Then `post_to_project` to reply in the shared project chat so the coordinator and user can see it.",
 	].join(" ");
-}
-
-/**
- * Build the per-category guidance fragment appended to the
- * coordinator's system prompt. Pulled from the bundled defaults
- * JSON at `~/.superhive/project-agent-defaults.json` (parsed shape
- * passed in by the caller — see `readProjectAgentDefaults` in
- * project.ts).
- *
- * Returns "" when:
- *   - `category` is missing/empty
- *   - `defaults` is null (file missing/corrupt)
- *   - the overlay for `category` is missing
- *   - the overlay's `systemPromptAddition` is empty/whitespace
- *
- * The marker guard for idempotency lives in the caller (index.ts).
- * This function is pure: same inputs → same output, no FS, no Pi
- * API.
- */
-export function buildCategoryFragment(
-	category: string | undefined | null,
-	defaults: ProjectAgentDefaultsShape | null,
-): string {
-	const trimmed = category?.trim();
-	if (!trimmed) return "";
-	if (!defaults) return "";
-
-	const overlay = defaults.overlays?.[trimmed];
-	if (!overlay) return "";
-
-	const addition = overlay.systemPromptAddition?.trim();
-	if (!addition) return "";
-
-	const skills = overlay.skills ?? [];
-	const skillsSection = skills.length > 0
-		? `\n\nCategory-specific skills:\n${skills.map((s) => `- ${s}`).join("\n")}`
-		: "";
-
-	return `## Category Guidance (${trimmed})\n\n${addition}${skillsSection}`;
 }
 
 // ---------------------------------------------------------------------------

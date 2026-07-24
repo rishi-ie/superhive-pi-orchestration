@@ -263,61 +263,6 @@ export function readProjectBlock(settingsPath: string): ProjectBlock | null {
 	return settings?.project ?? null;
 }
 
-// ---------------------------------------------------------------------------
-// Phase B: read bundled project-agent defaults for category fragments.
-//
-// The orchestrator appends a per-category `systemPromptAddition` to the
-// coordinator's CEO prompt on session_start. The fragments live in
-// `~/.superhive/project-agent-defaults.json`, populated at app startup
-// by `electron/install-project-agent-defaults.ts`.
-//
-// We read from the user's installed file (NOT the bundled source at
-// `<resourcesPath>/`) for two reasons:
-//   1. process.resourcesPath is Electron-only and doesn't reach the Pi
-//      subprocess that hosts this extension.
-//   2. The user's installed copy is the right place to read from — the
-//      user may have edited it (tweaked a fragment, added an overlay)
-//      and the install scripts are idempotent so user edits win.
-//
-// This function is the FS-side helper paired with the pure
-// `buildCategoryFragment` in system-prompt.ts. Returns null on any
-// failure (file missing, unreadable, malformed JSON) — the caller treats
-// null as "no category guidance".
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the canonical defaults file path. Reads HOME at call-time so
- * tests can mutate process.env.HOME between calls (the path is computed
- * on each invocation rather than pinned at module-load).
- */
-export function projectAgentDefaultsPath(): string {
-	return `${process.env.HOME ?? ""}/.superhive/project-agent-defaults.json`;
-}
-
-/**
- * Minimal shape we consume — matches the bundled JSON shipped at
- * superhive/resources/project-agent-defaults.json. Loose typing on
- * purpose: the orchestrator does not validate the schema (truth's
- * validateAndNormalize lives there); we just pluck overlays.
- */
-export interface ProjectAgentDefaultsShape {
-	version?: number;
-	base?: unknown;
-	overlays?: Record<string, { systemPromptAddition?: string; skills?: string[] }>;
-}
-
-export function readProjectAgentDefaults(): ProjectAgentDefaultsShape | null {
-	const path = projectAgentDefaultsPath();
-	if (!path || path === "/.superhive/project-agent-defaults.json") return null;
-	if (!existsSync(path)) return null;
-	try {
-		const raw = readFileSync(path, "utf8");
-		return JSON.parse(raw) as ProjectAgentDefaultsShape;
-	} catch {
-		return null;
-	}
-}
-
 /**
  * Replace the project block on disk. Preserves all other manage.json fields.
  */

@@ -1,11 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-	buildCategoryFragment,
 	buildRolePromptFragment,
 	buildSystemPrompt,
 	type PermissionsSnapshot,
-	type ProjectAgentDefaultsShape,
 	type SystemPromptInputs,
 } from "../system-prompt.ts";
 import type { ProjectBlock } from "../types.ts";
@@ -81,7 +79,6 @@ function makeInputs(overrides: Partial<SystemPromptInputs> = {}): SystemPromptIn
 		},
 		planMode: null,
 		spawnConfig: null,
-		defaults: null,
 		...overrides,
 	};
 }
@@ -194,93 +191,6 @@ test("buildRolePromptFragment: member fragment mentions [mail] and read_inbox", 
 	assert.match(fragment, /read_inbox/);
 	assert.match(fragment, /post_to_project/);
 	assert.doesNotMatch(fragment, /ask_member/);
-});
-
-// ---------------------------------------------------------------------------
-// Phase B: buildCategoryFragment — pure-function tests for the per-category
-// guidance fragment appended to the coordinator's CEO prompt.
-// ---------------------------------------------------------------------------
-
-const sampleDefaults: ProjectAgentDefaultsShape = {
-	version: 1,
-	overlays: {
-		research: {
-			systemPromptAddition: "Prioritize literature reviews and citation hygiene.",
-			skills: ["summarize", "research-paper-format"],
-		},
-		marketing: {
-			systemPromptAddition: "Optimize for messaging clarity.",
-			skills: ["copywriting-frameworks"],
-		},
-		general: {
-			systemPromptAddition: "",
-			skills: [],
-		},
-	},
-};
-
-test("buildCategoryFragment: returns empty string for null defaults", () => {
-	assert.equal(buildCategoryFragment("research", null), "");
-});
-
-test("buildCategoryFragment: returns empty string for missing category", () => {
-	assert.equal(buildCategoryFragment("research", {}), "");
-	assert.equal(buildCategoryFragment("research", { overlays: {} }), "");
-});
-
-test("buildCategoryFragment: returns empty string for empty systemPromptAddition", () => {
-	assert.equal(buildCategoryFragment("general", sampleDefaults), "");
-});
-
-test("buildCategoryFragment: returns empty string for empty/null/undefined category", () => {
-	assert.equal(buildCategoryFragment("", sampleDefaults), "");
-	assert.equal(buildCategoryFragment(undefined, sampleDefaults), "");
-	assert.equal(buildCategoryFragment(null, sampleDefaults), "");
-	assert.equal(buildCategoryFragment("  ", sampleDefaults), "");
-});
-
-test("buildCategoryFragment: returns markdown section with category heading + addition", () => {
-	const fragment = buildCategoryFragment("research", sampleDefaults);
-	assert.match(fragment, /^## Category Guidance \(research\)/);
-	assert.match(fragment, /Prioritize literature reviews and citation hygiene\./);
-});
-
-test("buildCategoryFragment: lists overlay skills when present", () => {
-	const fragment = buildCategoryFragment("research", sampleDefaults);
-	assert.match(fragment, /Category-specific skills:/);
-	assert.match(fragment, /- summarize/);
-	assert.match(fragment, /- research-paper-format/);
-});
-
-test("buildCategoryFragment: omits skills section when overlay has no skills", () => {
-	const fragment = buildCategoryFragment("marketing", sampleDefaults);
-	assert.match(fragment, /Optimize for messaging clarity\./);
-	assert.match(fragment, /Category-specific skills:/);
-	assert.match(fragment, /- copywriting-frameworks/);
-});
-
-test("buildCategoryFragment: handles overlay with skills but missing systemPromptAddition", () => {
-	const fragment = buildCategoryFragment("nosysprompt", {
-		overlays: { nosysprompt: { skills: ["only-skills"] } },
-	});
-	// Empty systemPromptAddition → empty fragment (we don't render
-	// skill-only fragments).
-	assert.equal(fragment, "");
-});
-
-test("buildCategoryFragment: trims whitespace from category and addition", () => {
-	const fragment = buildCategoryFragment("  research  ", {
-		overlays: { research: { systemPromptAddition: "  trimmed body  " } },
-	});
-	assert.match(fragment, /## Category Guidance \(research\)/);
-	assert.match(fragment, /trimmed body/);
-	assert.doesNotMatch(fragment, /^ {2}/m);
-});
-
-test("buildCategoryFragment: is pure — same inputs always produce same output", () => {
-	const a = buildCategoryFragment("research", sampleDefaults);
-	const b = buildCategoryFragment("research", sampleDefaults);
-	assert.equal(a, b);
 });
 
 // ---------------------------------------------------------------------------
