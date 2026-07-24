@@ -37,11 +37,14 @@ export interface ProjectBlock {
 }
 
 /**
- * Minimal shape of manage.json we care about (the `project` block and
- * the `identity` block carry name/description; agent `role` is on the
- * AgentRepository row, not truth). We do not import the full
- * `ManageFile` from truth because that would create a build dep and
- * the truth module is bundled into the agent independently.
+ * Minimal shape of manage.json we care about. The orchestrator reads
+ * the `project` block + the `identity` block + a handful of optional
+ * fields that drive the dynamic system prompt (Phase J):
+ * permissions, behavior, skills, extensions.
+ *
+ * We do not import the full `ManageFile` from truth because that
+ * would create a build dep and the truth module is bundled into
+ * the agent independently.
  */
 export interface ManageFileShape {
 	version?: number;
@@ -58,6 +61,36 @@ export interface ManageFileShape {
 		category?: string;
 	};
 	project?: ProjectBlock;
+	/**
+	 * Phase J: drives the explicit `## Permissions` section in the
+	 * system prompt. When at least one is `false`, the section
+	 * surfaces; otherwise it's omitted.
+	 */
+	permissions?: {
+		filesystem?: boolean;
+		terminal?: boolean;
+		network?: boolean;
+	};
+	/**
+	 * Phase J: drives the `## Behavior` section. `autoCompaction` /
+	 * `autoRetry === false` surface a heads-up to the model.
+	 */
+	behavior?: {
+		autoCompaction?: boolean;
+		autoRetry?: boolean;
+		[key: string]: unknown;
+	};
+	/**
+	 * Phase J: the agent's actual skill list. Rendered in the
+	 * `## Skills` section so the model knows what's available.
+	 */
+	skills?: string[];
+	/**
+	 * Phase J: list of enabled extension names. Used to compute
+	 * `activeExtensions` flags (context / plan / spawn) in
+	 * `assembleSystemPromptInputs`.
+	 */
+	extensions?: string[];
 	managedBy?: string;
 	lastModified?: string;
 }

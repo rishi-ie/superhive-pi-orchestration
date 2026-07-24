@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { orchestrationExtensionPathFor, settingsPathFor, writeProjectBlock, writeSettings } from "../project.ts";
 import type { ProjectBlock } from "../types.ts";
 
-import orchIndex from "../index.ts";
+import orchIndex, { assembleSystemPromptInputs, rebuildSystemPrompt } from "../index.ts";
 
 interface RegisteredTool {
 	name: string;
@@ -360,6 +360,180 @@ test("smoke: post_to_project appends a chat entry on disk", async () => {
 		cleanup();
 		// Clean up the smoke project's chat file too.
 		rmSync("/tmp/superhive-smoke-project", { recursive: true, force: true });
+	}
+});
+
+test("smoke: 'general' category (empty overlay) does NOT append a fragment", async () => {
+	await withFakeDefaults({
+		overlays: { general: { systemPromptAddition: "", skills: [] } },
+	}, async () => {
+		const api = makeFakeAPI();
+		const { workspace, settingsPath, orchPath, cleanup } = tempAgentWithProject(sampleProject);
+		try {
+			setIdentityCategory(settingsPath, "general");
+			await runSessionStart(api, workspace, "alice");
+			const { systemPrompt, roleFragmentAppended } = getOrchPrompt(orchPath);
+			assert.doesNotMatch(systemPrompt, /## Category Guidance/);
+			assert.equal(roleFragmentAppended, "coordinator");
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Phase J smoke tests — dynamic system prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive the buildSystemPrompt inputs helper directly (the same
+ * shape `rebuildSystemPrompt` uses internally). The smoke test
+ * doesn't need to register the extension — we're testing the
+ * pure-FS assembly path, not the file watchers.
+ */
+test("smoke: assembleSystemPromptInputs returns null when no project block", () => {
+	const { root, cleanup } = tempAgentEmpty();
+	try {
+		const inputs = assembleSystemPromptInputs(settingsPathFor(root), root);
+		assert.equal(inputs, null);
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: assembleSystemPromptInputs returns full snapshot for a project agent", () => {
+	const { root, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		const inputs = assembleSystemPromptInputs(settingsPathFor(root), root);
+		assert.ok(inputs, "expected non-null inputs");
+		assert.equal(inputs!.project.id, sampleProject.id);
+		assert.equal(inputs!.permissions.filesystem, true);
+		assert.equal(inputs!.activeExtensions.orchestration, true);
+		assert.equal(inputs!.activeExtensions.truth, true);
+		assert.equal(inputs!.activeExtensions.spawn, false);
+		assert.equal(inputs!.activeExtensions.plan, false);
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: rebuildSystemPrompt writes the CEO prompt with conditional sections", () => {
+	const { root, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		const prompt = rebuildSystemPrompt(root);
+		assert.ok(prompt, "expected non-null prompt");
+		// Always-on sections
+		assert.match(prompt!, /# Project Agent — Superhive/);
+		assert.match(prompt!, /## Mission/);
+		assert.match(prompt!, /## Your Team/);
+		assert.match(prompt!, /## Tools — Orchestrator/);
+		assert.match(prompt!, /## Mailbox/);
+		assert.match(prompt!, /## Decision Style/);
+		assert.match(prompt!, /## Escalation/);
+		assert.match(prompt!, /## Boundaries/);
+		assert.match(prompt!, /## Skills/);
+		// Conditional: plan + spawn are off by default
+		assert.doesNotMatch(prompt!, /## Tools — Plan/);
+		assert.doesNotMatch(prompt!, /## Tools — Spawn/);
+		// Permissions: all true by default → section omitted
+		assert.doesNotMatch(prompt!, /^## Permissions$/m);
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: rebuildSystemPrompt adds Permissions section when network is off", () => {
+	const { root, settingsPath, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		const current = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+		current.permissions = { filesystem: true, terminal: true, network: false };
+		writeSettings(settingsPath, current as Parameters<typeof writeSettings>[1]);
+		const prompt = rebuildSystemPrompt(root);
+		assert.ok(prompt);
+		assert.match(prompt!, /## Permissions/);
+		assert.match(prompt!, /`network`/);
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: rebuildSystemPrompt adds Tools — Spawn section when spawn ext is on", () => {
+	const { root, settingsPath, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		const current = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+		current.extensions = [
+			"./extensions/superhive-pi-truth",
+			"./extensions/superhive-pi-telemetry",
+			"./extensions/superhive-pi-context",
+			"./extensions/superhive-pi-orchestration",
+			"./extensions/superhive-pi-plan",
+			"./extensions/superhive-pi-spawn",
+		];
+		writeSettings(settingsPath, current as Parameters<typeof writeSettings>[1]);
+		// Also write the spawn file with enabled: true
+		writeFileSync(
+			join(root, "superhive-pi-spawn.json"),
+			JSON.stringify({ version: 1, enabled: true, allowedTemplates: null, requireApproval: false }),
+			"utf8",
+		);
+		const prompt = rebuildSystemPrompt(root);
+		assert.ok(prompt);
+		assert.match(prompt!, /## Tools — Spawn/);
+		assert.match(prompt!, /spawn_agent/);
+		assert.match(prompt!, /any installed template/);
+		// Spawn on → the Boundaries copy flips to "runtime"
+		assert.match(prompt!, /You can spawn new specialists at runtime/);
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: rebuildSystemPrompt adds Tools — Plan section when plan ext is on", () => {
+	const { root, settingsPath, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		const current = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+		current.extensions = [
+			"./extensions/superhive-pi-truth",
+			"./extensions/superhive-pi-telemetry",
+			"./extensions/superhive-pi-context",
+			"./extensions/superhive-pi-orchestration",
+			"./extensions/superhive-pi-plan",
+		];
+		writeSettings(settingsPath, current as Parameters<typeof writeSettings>[1]);
+		writeFileSync(
+			join(root, "superhive-pi-plan.json"),
+			JSON.stringify({
+				version: 1,
+				planMode: { defaultMode: "plan", thinkingLevel: "high" },
+			}),
+			"utf8",
+		);
+		const prompt = rebuildSystemPrompt(root);
+		assert.ok(prompt);
+		assert.match(prompt!, /## Tools — Plan/);
+		assert.match(prompt!, /## Tasks/);
+		assert.match(prompt!, /`plan`/); // defaultMode rendered
+	} finally {
+		cleanup();
+	}
+});
+
+test("smoke: rebuildSystemPrompt is idempotent — re-running does NOT bump counter on no-change", () => {
+	const { root, orchPath, cleanup } = tempAgentWithProject(sampleProject);
+	try {
+		// First build
+		rebuildSystemPrompt(root);
+		const first = readFileSync(orchPath, "utf8");
+		const firstCounter = (JSON.parse(first) as { managedBy?: string }).managedBy;
+		// Second build with the same state
+		rebuildSystemPrompt(root);
+		const second = readFileSync(orchPath, "utf8");
+		const secondCounter = (JSON.parse(second) as { managedBy?: string }).managedBy;
+		// deepEqualManaged path in writeOrchestrationExtension → no
+		// counter bump when content matches.
+		assert.equal(firstCounter, secondCounter, "counter should not bump on idempotent rebuild");
+	} finally {
+		cleanup();
 	}
 });
 

@@ -58,11 +58,60 @@ export function settingsJsonPathFor(agentRoot: string): string {
  * `superhive-pi-truth/settings-schema.ts::orchestrationExtensionPathFor`.
  *
  * The orchestrator writes project + systemPrompt here. The truth ext's
- * cascade engine then mirrors `systemPrompt` into settings.json for the
- * Pi runtime to consume.
+ * cascade engine then mirrors `systemPrompt` out into settings.json for
+ * the Pi runtime to consume.
  */
 export function orchestrationExtensionPathFor(agentRoot: string): string {
 	return join(agentRoot, "superhive-pi-orchestration.json");
+}
+
+/**
+ * Resolve the per-extension plan file. Matches
+ * `superhive-pi-truth/settings-schema.ts::planExtensionPathFor`.
+ *
+ * Phase J: the orchestrator reads this in `rebuildSystemPrompt` to
+ * decide whether the `## Tools — Plan` section should appear.
+ */
+export function planExtensionPathFor(agentRoot: string): string {
+	return join(agentRoot, "superhive-pi-plan.json");
+}
+
+/**
+ * Resolve the per-extension spawn file. Matches
+ * `superhive-pi-truth/settings-schema.ts::spawnExtensionPathFor`.
+ *
+ * Phase J: the orchestrator reads this in `rebuildSystemPrompt` to
+ * render the allowed-templates list and require-approval flag in
+ * the `## Tools — Spawn` section.
+ */
+export function spawnExtensionPathFor(agentRoot: string): string {
+	return join(agentRoot, "superhive-pi-spawn.json");
+}
+
+/**
+ * Loose reader for the plan file's contents. We don't import
+ * truth's `readPlanExtension` because it would create a hard
+ * dep on the truth module — and the shape is small enough to
+ * duplicate here as a loose shape.
+ */
+export interface PlanFileLoose {
+	version?: number;
+	planMode?: {
+		defaultMode: string;
+		thinkingLevel: string;
+		defaultPlanTools?: string[];
+		[key: string]: unknown;
+	};
+	[key: string]: unknown;
+}
+
+export function readPlanExtension(planPath: string): PlanFileLoose | null {
+	if (!existsSync(planPath)) return null;
+	try {
+		return JSON.parse(readFileSync(planPath, "utf8")) as PlanFileLoose;
+	} catch {
+		return null;
+	}
 }
 
 /**
