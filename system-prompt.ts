@@ -123,6 +123,7 @@ export function buildSystemPrompt(inputs: SystemPromptInputs): string {
 		// specific (plan_tasks / complete_task are plan ext tools).
 		buildMailboxSection(),
 		inputs.activeExtensions.plan ? buildTasksSection() : "",
+		buildProjectStateReportingSection(),
 		buildDecisionStyleSection(),
 		buildEscalationSection(),
 		buildBoundariesSection(inputs),
@@ -279,6 +280,23 @@ Use \`plan_tasks\` to break complex work into a dependency graph. Each task gets
 After a worker posts a \`result\` to the project chat and you have read it via \`read_inbox\`, call \`complete_task(taskId, summary)\` to mark the task done. The right-panel "Active tasks" accordion updates on the next \`tasks:changed\` event.
 
 Workers are not told about the plan — they only see their own task prompt. They post back to the project chat when done.`;
+}
+
+function buildProjectStateReportingSection(): string {
+	return `## Project Overview Reporting
+
+Keep the user's right-sidebar Overview accurate using these coordinator-only tools:
+
+- \`set_project_current_work({ phase, summary })\` — set the concise, current project state
+- \`set_project_focus({ items })\` — set one to three current outcomes
+- \`record_project_activity({ text })\` — record one meaningful milestone, delegation, decision, blocker, or completion
+- \`set_project_member_work({ agentId, work })\` — set a specialist's current assignment before delegating
+
+For the chat's live work status, call \`report_activity({ summary })\` immediately before each meaningful planning, research, review, or build phase. The summary must be one short, user-facing sentence such as "Designing the implementation approach" or "Reviewing the runtime event flow." Do not use it for every raw tool call.
+
+For every substantial user request, before substantive work, set the current work and focus. Update the current work and record activity when you delegate, receive a meaningful result, make a decision, become blocked, or complete the request. Before your final response, set the phase to \`complete\`, \`waiting\`, or \`blocked\` as appropriate.
+
+Do not log every raw tool call. Write only concise, truthful, user-facing status; never expose hidden reasoning, secrets, or verbose tool output.`;
 }
 
 function buildDecisionStyleSection(): string {

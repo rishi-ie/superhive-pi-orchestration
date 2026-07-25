@@ -401,6 +401,8 @@ test("Phase J: all sections appear when everything is enabled", () => {
 	assert.match(prompt, /## Tools — Context/);
 	assert.match(prompt, /## Mailbox/);
 	assert.match(prompt, /## Tasks/);
+	assert.match(prompt, /## Project Overview Reporting/);
+	assert.match(prompt, /set_project_current_work/);
 	assert.match(prompt, /## Decision Style/);
 	assert.match(prompt, /## Escalation/);
 	assert.match(prompt, /## Boundaries/);
