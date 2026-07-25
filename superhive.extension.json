@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "id": "superhive-pi-orchestration",
+  "title": "Project orchestration",
+  "description": "Project coordination, delegation, and project context.",
+  "category": "core",
+  "agentKinds": ["project-coordinator", "project-member"],
+  "defaultEnabled": true,
+  "apply": "next-turn",
+  "settings": { "type": "object", "properties": {} }
+}

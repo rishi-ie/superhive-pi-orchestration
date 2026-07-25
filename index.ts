@@ -414,18 +414,15 @@ export default function superhivePiOrchestration(pi: ExtensionAPI): void {
 				},
 			);
 
-			// Live-inject the latest prompt on every turn. Returns
-			// the cached value when unchanged; re-reads on cache
-			// invalidation (which only happens after a watcher
-			// tick, so we don't re-read the orch file on every
-			// turn when nothing has changed).
+			// Rebuild synchronously at the start of every user turn. The write is
+			// idempotent, but this read boundary is essential: a Manage edit made
+			// immediately before Send must affect this turn, not wait for the
+			// filesystem watcher's next polling interval.
 			pi.on("before_agent_start", (event) => {
-				if (state.cacheDirty) {
-					const fresh = readOrchestrationExtension(state.orchPath);
-					if (fresh?.systemPrompt) {
-						state.cachedPrompt = fresh.systemPrompt;
-						state.cacheDirty = false;
-					}
+				const rebuilt = rebuildSystemPrompt(state.agentRoot);
+				if (rebuilt) {
+					state.cachedPrompt = rebuilt;
+					state.cacheDirty = false;
 				}
 				const fresh = state.cachedPrompt;
 				if (fresh && fresh !== event.systemPrompt) {
